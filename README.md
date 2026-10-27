@@ -2,6 +2,7 @@
 
 **`data-genie`** is a high-performance, streaming-first **ETL (Extract, Transform, Load) Engine** written in **Rust**. Designed to process massive datasets (GBs to TBs) with a **constant `O(1)` memory footprint**, it combines Tokio's asynchronous streaming runtime with strong Rust type safety, integrated Dead Letter Queues (DLQ), and multi-transport support.
 
+![](./docs/demo.gif)
 ---
 
 ## Core Philosophy
@@ -93,9 +94,9 @@ By default, `data-genie` compiles with a minimal dependency footprint (`csv`, `s
 
 ```toml
 [dependencies]
-data-genie = { version = "0.1.1", features = ["parquet", "xlsx", "s3", "http"] }
+data-genie = { version = "0.1.2", features = ["parquet", "xlsx", "s3", "http"] }
 # Or enable everything:
-# data-genie = { version = "0.1.1", features = ["full"] }
+# data-genie = { version = "0.1.2", features = ["full"] }
 ```
 
 ### 5. CLI Usage
