@@ -1,11 +1,11 @@
-name: Deploy Rust Docs
+name: Deploy Docs (VitePress)
 
 on:
   push:
     branches: [ production ]
     paths:
-      - 'src/**'
-      - 'Cargo.toml'
+      - 'docs/**'
+      - '.github/workflows/deploy-docs.yml'
   workflow_dispatch:
 
 permissions:
@@ -13,35 +13,46 @@ permissions:
   pages: write
   id-token: write
 
-env:
-  CARGO_TERM_COLOR: always
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Rust Documentation (rustdoc)
-        run: |
-          cargo doc --no-deps --all-features
-          echo '<meta http-equiv="refresh" content="0; url=data_genie/index.html">' > target/doc/index.html
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Setup Pages
-        uses: actions/configure-pages@v4
+        uses: actions/configure-pages@v5
+
+      - name: Build VitePress Site (External Runner Workspace)
+        run: |
+          mkdir -p /tmp/vp-site
+          cp -R docs /tmp/vp-site/docs
+          cd /tmp/vp-site
+          npm init -y
+          npm install -D vitepress vitepress-plugin-mermaid mermaid
+          npx vitepress build docs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: target/doc
+          path: /tmp/vp-site/docs/.vitepress/dist
 
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4

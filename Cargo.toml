@@ -7,9 +7,10 @@ license = "MIT"
 description = "High-performance, streaming-first ETL engine in Rust"
 repository = "https://github.com/pujansrt/data-genie-rs.git"
 homepage = "https://pujansrt.github.io/data-genie-rs/"
+documentation = "https://docs.rs/data-genie"
 keywords = ["etl", "streaming", "data-pipeline", "parquet", "csv"]
 categories = ["data-structures", "asynchronous", "command-line-utilities"]
-exclude = ["examples/input/heavy_data.csv", "badges/*", ".github/*"]
+exclude = ["examples/input/heavy_data.csv", "badges/*", ".github/*", "docs/*"]
 autotests = false
 
 [lib]
