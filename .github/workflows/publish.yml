@@ -1,0 +1,50 @@
+name: CI & Publish to Crates.io
+
+on:
+  push:
+    branches:
+      - production
+      - feat/rust-port
+  pull_request:
+    branches:
+      - production
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Tests (Default Minimal Features)
+        run: cargo test
+
+      - name: Run Tests (All Optional Features)
+        run: cargo test --all-features
+
+      - name: Check Examples
+        run: cargo check --examples --all-features
+
+      - name: Build Release
+        run: cargo build --release --all-features
+
+      - name: Publish to Crates.io
+        if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        continue-on-error: true

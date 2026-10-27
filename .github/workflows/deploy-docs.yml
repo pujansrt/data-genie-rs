@@ -1,0 +1,48 @@
+name: Deploy Rust Docs
+
+on:
+  push:
+    branches: [ production ]
+    paths:
+      - 'src/**'
+      - 'docs/**'
+      - 'Cargo.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Rust Documentation (rustdoc)
+        run: |
+          cargo doc --no-deps --all-features
+          echo '<meta http-equiv="refresh" content="0; url=data_genie/index.html">' > target/doc/index.html
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/doc
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

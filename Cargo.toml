@@ -1,0 +1,72 @@
+[package]
+name = "data-genie"
+version = "2.0.0"
+edition = "2021"
+authors = ["Pujan Srivastava"]
+license = "MIT"
+description = "High-performance, streaming-first ETL engine in Rust"
+repository = "https://github.com/pujansrt/data-genie-rs.git"
+homepage = "https://pujansrt.github.io/data-genie/"
+keywords = ["etl", "streaming", "data-pipeline", "parquet", "csv"]
+categories = ["data-structures", "asynchronous", "command-line-utilities"]
+autotests = false
+
+[lib]
+name = "data_genie"
+path = "src/lib.rs"
+
+[[bin]]
+name = "data-genie"
+path = "src/main.rs"
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+
+[[example]]
+name = "example"
+path = "examples/example.rs"
+
+[[example]]
+name = "stress-test"
+path = "tests/stress-test.rs"
+
+[features]
+default = []
+full = ["parquet", "xlsx", "s3", "http"]
+parquet = ["dep:parquet", "dep:arrow", "dep:bytes"]
+xlsx = ["dep:calamine", "dep:rust_xlsxwriter"]
+s3 = ["dep:object_store", "dep:bytes", "dep:tokio-util"]
+http = ["dep:reqwest", "dep:tokio-util", "tokio/net"]
+
+[dependencies]
+# Core minimal dependencies
+tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "io-util", "fs", "sync", "time"] }
+futures = { version = "0.3", default-features = false, features = ["std", "alloc"] }
+async-stream = "0.3"
+async-trait = "0.1"
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0", default-features = false, features = ["std", "preserve_order"] }
+serde_yaml = "0.9"
+indexmap = { version = "2.6", default-features = false, features = ["std", "serde"] }
+csv = "1.3"
+regex = { version = "1.11", default-features = false, features = ["std", "perf", "unicode-perl"] }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+quick-xml = { version = "0.37", default-features = false }
+
+# Optional format & cloud connectors (like peerDependencies in TypeScript)
+tokio-util = { version = "0.7", default-features = false, features = ["io"], optional = true }
+bytes = { version = "1.8", default-features = false, features = ["std"], optional = true }
+calamine = { version = "0.37", optional = true }
+rust_xlsxwriter = { version = "0.79", optional = true }
+parquet = { version = "54.2", default-features = false, features = ["arrow", "snap", "flate2", "zstd", "lz4"], optional = true }
+arrow = { version = "54.2", default-features = false, features = ["ipc", "json"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"], optional = true }
+object_store = { version = "0.11", default-features = false, features = ["aws"], optional = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+
