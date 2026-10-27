@@ -144,9 +144,9 @@ By default, `data-genie` compiles with a minimal dependency footprint (`csv`, `s
 
 ```toml
 [dependencies]
-data-genie = { version = "2.1", features = ["parquet", "xlsx", "s3", "http"] }
+data-genie = { version = "0.1.0", features = ["parquet", "xlsx", "s3", "http"] }
 # Or enable everything:
-# data-genie = { version = "2.1", features = ["full"] }
+# data-genie = { version = "0.1.0", features = ["full"] }
 ```
 
 ### 5. CLI Usage

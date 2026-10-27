@@ -1,6 +1,6 @@
 [package]
 name = "data-genie"
-version = "2.0.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["Pujan Srivastava"]
 license = "MIT"
@@ -9,6 +9,7 @@ repository = "https://github.com/pujansrt/data-genie-rs.git"
 homepage = "https://pujansrt.github.io/data-genie/"
 keywords = ["etl", "streaming", "data-pipeline", "parquet", "csv"]
 categories = ["data-structures", "asynchronous", "command-line-utilities"]
+exclude = ["examples/input/heavy_data.csv", "badges/*", ".github/*"]
 autotests = false
 
 [lib]
