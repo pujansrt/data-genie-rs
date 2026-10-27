@@ -27,7 +27,7 @@ A clear and concise description of what you expected to happen.
 **Environment (please complete the following information):**
  - OS: [e.g. macOS, Ubuntu, Windows]
  - Rust version (`rustc --version`): [e.g. 1.85.0]
- - Data-Genie version: [e.g. 2.0.0]
+ - Data-Genie version: [e.g. 0.1.0]
  - Enabled Cargo features: [e.g. default, `parquet`, `xlsx`, `s3`, `http`, `full`]
 
 **Additional context**

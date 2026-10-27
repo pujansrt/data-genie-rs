@@ -1,12 +1,12 @@
 [package]
 name = "data-genie"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Pujan Srivastava"]
 license = "MIT"
 description = "High-performance, streaming-first ETL engine in Rust"
 repository = "https://github.com/pujansrt/data-genie-rs.git"
-homepage = "https://pujansrt.github.io/data-genie/"
+homepage = "https://pujansrt.github.io/data-genie-rs/"
 keywords = ["etl", "streaming", "data-pipeline", "parquet", "csv"]
 categories = ["data-structures", "asynchronous", "command-line-utilities"]
 exclude = ["examples/input/heavy_data.csv", "badges/*", ".github/*"]

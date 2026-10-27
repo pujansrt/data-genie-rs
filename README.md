@@ -9,7 +9,70 @@
 - **O(1) Memory Complexity**: Data is streamed record-by-record via `futures::Stream` (`RecordStream`).
 - **Transport Agnostic**: Works seamlessly across Local Files (`FileSource`/`FileSink`), AWS S3 (`S3Source`/`S3Sink`), HTTP APIs (`HttpSource`/`HttpSink`), and Memory (`MemorySource`/`MemorySink`).
 - **Fault Tolerance**: Integrated Dead Letter Queues (DLQ) with automatic upstream propagation, exponential backoff (`RetryingWriter`), and Circuit Breakers.
-- **Declarative & Programmatic**: Run pipelines programmatically in Rust or declaratively via YAML (`data-genie run pipeline.yaml`).
+- **Programmatic & Declarative Support**: Run code programmatically in **Rust** or declaratively via **YAML** (see examples below).
+---
+
+## Quick Start
+
+### 1. Synchronous Execution
+Call `Job::run_blocking(reader, writer)` directly without `#[tokio::main]`
+
+```rust
+use data_genie::{CSVReader, Job, JsonWriter};
+
+fn main() -> data_genie::Result<()> {
+    let reader = CSVReader::new("examples/input/users.csv");
+    let writer = JsonWriter::new("examples/output/users.json");
+
+    let metrics = Job::run_blocking(reader, writer)?;
+    println!("Processed {} records", metrics.record_count);
+    Ok(())
+}
+```
+
+### 2. Asynchronous Execution
+If your application already runs inside an async runtime (such as `#[tokio::main]`, Axum, or Actix), use `Job::run(reader, writer).await`:
+
+```rust
+use data_genie::{CSVReader, Job, JsonWriter};
+
+#[tokio::main]
+async fn main() -> data_genie::Result<()> {
+    let reader = CSVReader::new("examples/input/users.csv");
+    let writer = JsonWriter::new("examples/output/users.json");
+
+    let metrics = Job::run(reader, writer).await?;
+    println!("Processed {} records", metrics.record_count);
+    Ok(())
+}
+```
+
+### 3. Transformations, Filtering & DLQ
+
+```rust
+use data_genie::{
+    CSVReader, FilterExpression, FilteringReader, Job, JsonWriter,
+    RenameField, SelectFields, TransformingReader, ValidatingReader,
+};
+
+fn main() -> data_genie::Result<()> {
+    let reader = CSVReader::new("examples/input/users.csv");
+
+    let filtered = FilteringReader::new(reader)
+        .add_rule(FilterExpression::new("age > 30").create_record_filter());
+
+    let transformed = TransformingReader::new(filtered)
+        .add_transform(RenameField::new("fname", "firstName").transform())
+        .add_transform(SelectFields::new(["firstName", "email", "age"]).transform());
+
+    // Dead Letter Queue automatically propagates upstream to CSVReader
+    let validated = ValidatingReader::new(transformed)
+        .with_dlq(JsonWriter::new("examples/output/errors.json"));
+
+    Job::run_blocking(validated, JsonWriter::new("examples/output/users.json"))?;
+    Ok(())
+}
+```
 
 ---
 
@@ -23,120 +86,6 @@
 | **Databases & APIs** | `SQLReader`, `HttpReader` | `SQLWriter` (Postgres, MySQL, SQLite, Oracle Upserts) |
 | **Composite & Utility** | `MemoryReader` | `MemoryWriter`, `ConsoleWriter`, `MultiWriter`, `RetryingWriter`, `CallbackWriter`, `BatchCallbackWriter`, `ParallelWriter` |
 
----
-
-## Quick Start
-
-### 1. Synchronous Execution (No `#[tokio::main]` Needed)
-
-You do not need `#[tokio::main]` or `tokio` in your own `Cargo.toml`. Call `job.execute_blocking()` or `Job::run_blocking(reader, writer)` directly inside a standard `fn main()`:
-
-```rust
-use std::io::{self, Write};
-use std::time::Instant;
-use data_genie::{CSVReader, Job, JobOptions, JsonWriter, SharedWriter};
-
-fn main() -> data_genie::Result<()> {
-    let dlq = SharedWriter::new(JsonWriter::new("examples/output/errors.json"));
-    let reader = CSVReader::new("examples/input/heavy_data.csv").with_dlq(dlq.clone());
-    let writer = JsonWriter::new("examples/output/output.json");
-
-    let start_time = Instant::now();
-    let mut job = Job::with_options(reader, writer, JobOptions::new().with_progress(false));
-
-    job.on_progress(|m| {
-        print!(
-            "\r⏳ Processed: {} | {:.0} rec/sec",
-            m.record_count, m.records_per_second
-        );
-        let _ = io::stdout().flush();
-    });
-
-    // Automatically spins up an internal runtime and runs to completion
-    let metrics = job.execute_blocking()?;
-    dlq.close_dlq_blocking()?;
-
-    let elapsed_mins = start_time.elapsed().as_secs_f64() / 60.0;
-    println!("\n--- Performance Report ---");
-    println!("Total Time: {:.2} minutes", elapsed_mins);
-    println!("Avg Speed: {:.0} records/sec", metrics.records_per_second);
-    println!("Final Count: {}", metrics.record_count);
-
-    Ok(())
-}
-```
-
-### 2. Asynchronous Execution (With `#[tokio::main]` or Existing Async Runtime)
-
-If your application already runs inside an async runtime (such as `#[tokio::main]`, Axum, or Actix), use `.execute().await` or `Job::run(reader, writer).await`:
-
-```rust
-use std::io::{self, Write};
-use std::time::Instant;
-use data_genie::{CSVReader, Job, JobOptions, JsonWriter, SharedWriter};
-
-#[tokio::main]
-async fn main() -> data_genie::Result<()> {
-    let dlq = SharedWriter::new(JsonWriter::new("examples/output/errors.json"));
-    let reader = CSVReader::new("examples/input/heavy_data.csv").with_dlq(dlq.clone());
-    let writer = JsonWriter::new("examples/output/output.json");
-
-    let start_time = Instant::now();
-    let mut job = Job::with_options(reader, writer, JobOptions::new().with_progress(false));
-
-    job.on_progress(|m| {
-        print!(
-            "\r⏳ Processed: {} | {:.0} rec/sec",
-            m.record_count, m.records_per_second
-        );
-        let _ = io::stdout().flush();
-    });
-
-    let metrics = job.execute().await?;
-    dlq.close_dlq().await?;
-
-    let elapsed_mins = start_time.elapsed().as_secs_f64() / 60.0;
-    println!("\n--- Performance Report ---");
-    println!("Total Time: {:.2} minutes", elapsed_mins);
-    println!("Avg Speed: {:.0} records/sec", metrics.records_per_second);
-    println!("Final Count: {}", metrics.record_count);
-
-    Ok(())
-}
-```
-
-### 3. Transformations, Filtering & DLQ Propagation
-
-```rust
-use data_genie::{
-    CSVReader, FilterExpression, FilteringReader, Job, JsonWriter,
-    RenameField, SelectFields, SetCalculatedField, TransformingReader, ValidatingReader,
-};
-
-fn main() -> data_genie::Result<()> {
-    let reader = CSVReader::new("examples/input/users.csv");
-
-    // Filter records with expression
-    let expr = FilterExpression::new("age > 30");
-    let filtered = FilteringReader::new(reader).add_rule(expr.create_record_filter());
-
-    // Chain field transformations
-    let transformed = TransformingReader::new(filtered)
-        .add_transform(RenameField::new("fname", "firstName").transform())
-        .add_transform(SetCalculatedField::new("tier", "age >= 50 ? 'GOLD' : 'STANDARD'").transform())
-        .add_transform(SelectFields::new(["firstName", "email", "age", "tier"]).transform());
-
-    // Attach DLQ on ValidatingReader (automatically propagates upstream to CSVReader)
-    let validated = ValidatingReader::new(transformed)
-        .with_dlq(JsonWriter::new("output/errors.json"));
-
-    let writer = JsonWriter::new("output/users_filtered.json");
-    let metrics = Job::run_blocking(validated, writer)?;
-
-    println!("Processed {} records at {:.0} rec/sec", metrics.record_count, metrics.records_per_second);
-    Ok(())
-}
-```
 
 ### 4. Optional Cargo Features
 
@@ -144,9 +93,9 @@ By default, `data-genie` compiles with a minimal dependency footprint (`csv`, `s
 
 ```toml
 [dependencies]
-data-genie = { version = "0.1.0", features = ["parquet", "xlsx", "s3", "http"] }
+data-genie = { version = "0.1.1", features = ["parquet", "xlsx", "s3", "http"] }
 # Or enable everything:
-# data-genie = { version = "0.1.0", features = ["full"] }
+# data-genie = { version = "0.1.1", features = ["full"] }
 ```
 
 ### 5. CLI Usage
