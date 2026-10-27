@@ -36,6 +36,7 @@ export default withMermaid(
             text: 'Recipes',
             items: [
               { text: 'Introduction', link: '/cookbook/index' },
+              { text: 'Async Execution (Tokio)', link: '/cookbook/async-execution' },
               { text: 'CSV to PostgreSQL', link: '/cookbook/csv-to-postgres' },
               { text: 'SQL Upserts (Idempotent Sync)', link: '/cookbook/sql-upsert' },
               { text: 'CSV to S3 (JSON/Parquet)', link: '/cookbook/csv-to-s3' },

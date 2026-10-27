@@ -1,16 +1,15 @@
 # Building a Real-time Dashboard
 
-Use `Job` lifecycle callbacks (`on_progress`, `on_error`, `on_complete`) with an async Rust web server (such as Axum) to stream real-time ETL metrics over Server-Sent Events (SSE).
+Use `Job` lifecycle callbacks (`on_progress`, `on_error`, `on_complete`) to push real-time ETL metrics over a channel or Server-Sent Events (SSE) stream.
 
-## Backend Example (Rust + Tokio Channel)
+## Example
 
 ```rust
 use data_genie::{CSVReader, Job, JobOptions, JsonWriter};
-use tokio::sync::mpsc;
+use std::sync::mpsc;
 
-#[tokio::main]
-async fn main() -> data_genie::Result<()> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
+fn main() -> data_genie::Result<()> {
+    let (tx, rx) = mpsc::channel();
 
     let reader = CSVReader::new("massive_data.csv");
     let writer = JsonWriter::new("output.json");
@@ -33,13 +32,11 @@ async fn main() -> data_genie::Result<()> {
         }));
     });
 
-    tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            println!("SSE event -> data: {}", event);
-        }
-    });
+    job.execute_blocking()?;
 
-    job.execute().await?;
+    for event in rx.try_iter() {
+        println!("SSE event -> data: {}", event);
+    }
     Ok(())
 }
 ```

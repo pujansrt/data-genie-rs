@@ -7,8 +7,7 @@ Combine `S3Source` and `ParquetReader` with `CallbackWriter` or `BatchCallbackWr
 ```rust
 use data_genie::{CallbackWriter, Job, ParquetReader, S3Config, S3Source};
 
-#[tokio::main]
-async fn main() -> data_genie::Result<()> {
+fn main() -> data_genie::Result<()> {
     let source = S3Source::new("my-bucket", "exports/users.parquet", S3Config::new("us-east-1"))?;
     let reader = ParquetReader::from_source(Box::new(source));
 
@@ -19,7 +18,7 @@ async fn main() -> data_genie::Result<()> {
         Ok(())
     });
 
-    Job::run(reader, writer).await?;
+    Job::run_blocking(reader, writer)?;
     Ok(())
 }
 ```
@@ -29,8 +28,7 @@ async fn main() -> data_genie::Result<()> {
 ```rust
 use data_genie::{BatchCallbackWriter, Job, ParquetReader, S3Config, S3Source};
 
-#[tokio::main]
-async fn main() -> data_genie::Result<()> {
+fn main() -> data_genie::Result<()> {
     let source = S3Source::new("my-bucket", "exports/users.parquet", S3Config::new("us-east-1"))?;
     let reader = ParquetReader::from_source(Box::new(source));
 
@@ -40,7 +38,7 @@ async fn main() -> data_genie::Result<()> {
         Ok(())
     });
 
-    Job::run(reader, writer).await?;
+    Job::run_blocking(reader, writer)?;
     Ok(())
 }
 ```

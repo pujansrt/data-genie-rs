@@ -37,8 +37,6 @@ import CodeGenerator from '../.vitepress/components/CodeGenerator.vue'
 
 ## Quick Start: CSV to JSON
 
-### Synchronous (No `#[tokio::main]` Needed)
-
 ```rust
 use data_genie::{CSVReader, Job, JsonWriter};
 
@@ -52,21 +50,7 @@ fn main() -> data_genie::Result<()> {
 }
 ```
 
-### Asynchronous (With `#[tokio::main]`)
-
-```rust
-use data_genie::{CSVReader, Job, JsonWriter};
-
-#[tokio::main]
-async fn main() -> data_genie::Result<()> {
-    let reader = CSVReader::new("users.csv");
-    let writer = JsonWriter::new("output.json");
-
-    let metrics = Job::run(reader, writer).await?;
-    println!("Processed {} records", metrics.record_count);
-    Ok(())
-}
-```
+> Running inside `#[tokio::main]`? Use `Job::run(reader, writer).await?` instead—see [Async Execution (Tokio)](../cookbook/async-execution.md).
 
 ## Optional Cargo Features
 
