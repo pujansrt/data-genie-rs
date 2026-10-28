@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{value_to_string, DataReader, RecordStream, SharedWriter};
+use crate::core::traits::{DataReader, RecordStream, SharedWriter, value_to_string};
 
 /// Pluggable key-store interface for `RemoveDuplicatesReader` (supports in-memory, disk, or Redis stores).
 #[async_trait]

@@ -4,10 +4,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataRecord, DataWriter};
+use crate::core::traits::{DataRecord, DataWriter};
 
-type AsyncBatchCallback =
-    Arc<dyn Fn(Vec<DataRecord>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
+type AsyncBatchCallback = Arc<dyn Fn(Vec<DataRecord>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
 
 /// Buffers `DataRecord` items into batches of `batch_size` before invoking a callback.
 pub struct BatchCallbackWriter {

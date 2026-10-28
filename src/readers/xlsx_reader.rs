@@ -1,11 +1,11 @@
 use async_stream::try_stream;
-use calamine::{open_workbook_from_rs, Data, Reader as CalamineReader, Xlsx};
-use serde_json::{json, Number, Value};
+use calamine::{Data, Reader as CalamineReader, Xlsx, open_workbook_from_rs};
+use serde_json::{Number, Value, json};
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::core::interfaces::{DataReader, DataRecord, DataSource, RecordStream};
-use crate::core::transport_utils::{ensure_data_source, SourceInput};
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 use crate::transformers::SchemaValidator;
 
 #[derive(Clone)]
@@ -55,9 +55,7 @@ impl XlsxReader {
                 if f.fract() == 0.0 && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64) {
                     json!(*f as i64)
                 } else {
-                    Number::from_f64(*f)
-                        .map(Value::Number)
-                        .unwrap_or(Value::Null)
+                    Number::from_f64(*f).map(Value::Number).unwrap_or(Value::Null)
                 }
             }
             Data::Bool(b) => Value::Bool(*b),

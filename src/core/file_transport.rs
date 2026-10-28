@@ -5,7 +5,7 @@ use tokio::fs::{self, File};
 use tokio::io::{AsyncRead, AsyncWrite, BufReader, BufWriter};
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataSink, DataSource};
+use crate::core::traits::{DataSink, DataSource};
 
 const IO_BUFFER_CAPACITY: usize = 256 * 1024; // 256 KB buffer to minimize OS syscalls & threadpool hops
 
@@ -20,10 +20,7 @@ impl FileSource {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         let file_path = path.as_ref().to_path_buf();
         let display_name = file_path.to_string_lossy().to_string();
-        Self {
-            file_path,
-            display_name,
-        }
+        Self { file_path, display_name }
     }
 
     pub fn path(&self) -> &Path {
@@ -58,10 +55,7 @@ impl FileSink {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         let file_path = path.as_ref().to_path_buf();
         let display_name = file_path.to_string_lossy().to_string();
-        Self {
-            file_path,
-            display_name,
-        }
+        Self { file_path, display_name }
     }
 
     pub fn path(&self) -> &Path {

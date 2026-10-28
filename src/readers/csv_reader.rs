@@ -1,11 +1,11 @@
 use async_stream::try_stream;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::core::error::DataGenieError;
-use crate::core::interfaces::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
-use crate::core::transport_utils::{ensure_data_source, SourceInput};
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 use crate::transformers::SchemaValidator;
 
 #[derive(Clone, Default)]
@@ -80,11 +80,7 @@ impl CSVReader {
     }
 
     #[inline]
-    fn parse_csv_line<'a>(
-        line: &'a str,
-        delimiter: u8,
-        str_record: &'a mut csv::StringRecord,
-    ) -> std::result::Result<Vec<&'a str>, csv::Error> {
+    fn parse_csv_line<'a>(line: &'a str, delimiter: u8, str_record: &'a mut csv::StringRecord) -> std::result::Result<Vec<&'a str>, csv::Error> {
         let delim_char = delimiter as char;
         // Fast path for unquoted CSV lines (avoids constructing a full csv::Reader state machine per row)
         if !line.as_bytes().contains(&b'"') {

@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::core::error::DataGenieError;
-use crate::core::interfaces::{DataReader, RecordStream, SqlConnection};
+use crate::core::traits::{DataReader, RecordStream, SqlConnection};
 use crate::transformers::SchemaValidator;
 
 /// Driver-agnostic SQL database reader supporting single-query execution,
@@ -19,11 +19,7 @@ pub struct SQLReader {
 }
 
 impl SQLReader {
-    pub fn new(
-        db_client: Arc<dyn SqlConnection>,
-        query: impl Into<String>,
-        params: Vec<Value>,
-    ) -> Self {
+    pub fn new(db_client: Arc<dyn SqlConnection>, query: impl Into<String>, params: Vec<Value>) -> Self {
         Self {
             db_client,
             query: query.into(),

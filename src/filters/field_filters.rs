@@ -2,7 +2,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::core::interfaces::{value_to_f64, value_to_string, DataRecord};
+use crate::core::traits::{DataRecord, value_to_f64, value_to_string};
 
 pub type FieldFilterRule = Arc<dyn Fn(&Value) -> bool + Send + Sync>;
 
@@ -102,11 +102,7 @@ pub fn less_than(threshold: f64) -> FieldFilterRule {
 
 /// Checks that a numeric field value lies inclusively between `min` and `max`.
 pub fn between(min: f64, max: f64) -> FieldFilterRule {
-    Arc::new(move |value: &Value| {
-        value_to_f64(value)
-            .map(|v| v >= min && v <= max)
-            .unwrap_or(false)
-    })
+    Arc::new(move |value: &Value| value_to_f64(value).map(|v| v >= min && v <= max).unwrap_or(false))
 }
 
 /// Checks if a field value is null or an empty string `""`.

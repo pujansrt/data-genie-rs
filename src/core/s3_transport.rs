@@ -11,8 +11,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::io::StreamReader;
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataSink, DataSource};
 use crate::core::memory_transport::SharedVecWriter;
+use crate::core::traits::{DataSink, DataSource};
 
 /// S3-compatible `DataSource` built on `object_store`.
 /// Supports real AWS S3 buckets as well as custom `Arc<dyn ObjectStore>` (e.g., `InMemory` for tests or MinIO).
@@ -26,28 +26,17 @@ pub struct S3Source {
 
 impl S3Source {
     /// Creates a new `S3Source` backed by an existing `ObjectStore` client.
-    pub fn new(
-        store: Arc<dyn ObjectStore>,
-        bucket: impl Into<String>,
-        key: impl Into<String>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn ObjectStore>, bucket: impl Into<String>, key: impl Into<String>) -> Self {
         let bucket = bucket.into();
         let key = key.into();
         let uri = format!("s3://{}/{}", bucket, key);
-        Self {
-            store,
-            bucket,
-            key,
-            uri,
-        }
+        Self { store, bucket, key, uri }
     }
 
     /// Creates a new `S3Source` using AWS S3 environment configuration.
     pub fn from_env(bucket: impl Into<String>, key: impl Into<String>) -> Result<Self> {
         let bucket_str = bucket.into();
-        let s3 = AmazonS3Builder::from_env()
-            .with_bucket_name(&bucket_str)
-            .build()?;
+        let s3 = AmazonS3Builder::from_env().with_bucket_name(&bucket_str).build()?;
         Ok(Self::new(Arc::new(s3), bucket_str, key))
     }
 
@@ -92,11 +81,7 @@ pub struct S3Sink {
 }
 
 impl S3Sink {
-    pub fn new(
-        store: Arc<dyn ObjectStore>,
-        bucket: impl Into<String>,
-        key: impl Into<String>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn ObjectStore>, bucket: impl Into<String>, key: impl Into<String>) -> Self {
         let bucket = bucket.into();
         let key = key.into();
         let uri = format!("s3://{}/{}", bucket, key);
@@ -117,9 +102,7 @@ impl S3Sink {
 
     pub fn from_env(bucket: impl Into<String>, key: impl Into<String>) -> Result<Self> {
         let bucket_str = bucket.into();
-        let s3 = AmazonS3Builder::from_env()
-            .with_bucket_name(&bucket_str)
-            .build()?;
+        let s3 = AmazonS3Builder::from_env().with_bucket_name(&bucket_str).build()?;
         Ok(Self::new(Arc::new(s3), bucket_str, key))
     }
 

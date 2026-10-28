@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataRecord, DataWriter};
+use crate::core::traits::{DataRecord, DataWriter};
 
 /// Stores written records in a thread-safe shared in-memory `Vec<DataRecord>`.
 /// Cloning `MemoryWriter` shares the underlying buffer so tests and DLQ inspectors can read emitted records after a job completes.

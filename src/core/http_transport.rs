@@ -9,8 +9,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::io::StreamReader;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{DataSink, DataSource};
 use crate::core::memory_transport::SharedVecWriter;
+use crate::core::traits::{DataSink, DataSource};
 
 #[derive(Debug, Clone, Default)]
 pub struct HttpSourceOptions {
@@ -49,9 +49,7 @@ impl HttpSource {
 impl DataSource for HttpSource {
     async fn get_reader(&self) -> Result<Pin<Box<dyn AsyncRead + Send + Unpin>>> {
         let method_str = self.options.method.as_deref().unwrap_or("GET");
-        let method = Method::from_bytes(method_str.as_bytes()).map_err(|e| {
-            DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e))
-        })?;
+        let method = Method::from_bytes(method_str.as_bytes()).map_err(|e| DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e)))?;
 
         let mut req = self.client.request(method, &self.url);
         for (k, v) in &self.options.headers {
@@ -64,10 +62,7 @@ impl DataSource for HttpSource {
         let response = req.send().await?;
         let status = response.status();
         if !status.is_success() {
-            return Err(DataGenieError::Http(format!(
-                "HttpSource: {} returned {}",
-                self.url, status
-            )));
+            return Err(DataGenieError::Http(format!("HttpSource: {} returned {}", self.url, status)));
         }
 
         let byte_stream = response.bytes_stream().map_err(std::io::Error::other);
@@ -130,14 +125,9 @@ impl DataSink for HttpSink {
         };
 
         let method_str = self.options.method.as_deref().unwrap_or("POST");
-        let method = Method::from_bytes(method_str.as_bytes()).map_err(|e| {
-            DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e))
-        })?;
+        let method = Method::from_bytes(method_str.as_bytes()).map_err(|e| DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e)))?;
 
-        let mut req = self
-            .client
-            .request(method, &self.url)
-            .header("Content-Type", "application/octet-stream");
+        let mut req = self.client.request(method, &self.url).header("Content-Type", "application/octet-stream");
 
         for (k, v) in &self.options.headers {
             req = req.header(k, v);
@@ -147,10 +137,7 @@ impl DataSink for HttpSink {
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(DataGenieError::Http(format!(
-                "HttpSink: {} returned {}. {}",
-                self.url, status, text
-            )));
+            return Err(DataGenieError::Http(format!("HttpSink: {} returned {}. {}", self.url, status, text)));
         }
 
         Ok(())

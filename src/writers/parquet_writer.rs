@@ -10,8 +10,8 @@ use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{value_to_f64, value_to_string, DataRecord, DataSink, DataWriter};
-use crate::core::transport_utils::{ensure_data_sink, SinkInput};
+use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_f64, value_to_string};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParquetColumnType {
@@ -148,8 +148,7 @@ impl ParquetWriter {
 
         let Some(ref schema_cfg) = self.schema else {
             return Err(DataGenieError::Config(
-                "Parquet schema must be provided via constructor or set_schema() before writing."
-                    .to_string(),
+                "Parquet schema must be provided via constructor or set_schema() before writing.".to_string(),
             ));
         };
 
@@ -249,9 +248,7 @@ impl ParquetWriter {
                                 }
                             }
                             Some(Value::Bool(b)) => builder.append_value(*b),
-                            Some(Value::String(s)) => {
-                                builder.append_value(s.eq_ignore_ascii_case("true") || s == "1")
-                            }
+                            Some(Value::String(s)) => builder.append_value(s.eq_ignore_ascii_case("true") || s == "1"),
                             _ => builder.append_value(false),
                         }
                     }

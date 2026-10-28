@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::core::interfaces::{DataReader, DataSource, RecordStream, SharedWriter};
-use crate::core::transport_utils::{ensure_data_source, SourceInput};
+use crate::core::traits::{DataReader, DataSource, RecordStream, SharedWriter};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 use crate::readers::csv_reader::{CSVReader, CSVReaderOptions};
 use crate::transformers::SchemaValidator;
 

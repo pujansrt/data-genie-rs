@@ -2,7 +2,7 @@ use async_stream::try_stream;
 use futures::StreamExt;
 use std::sync::Arc;
 
-use crate::core::interfaces::{DataReader, DataRecord, RecordStream, SharedWriter};
+use crate::core::traits::{DataReader, DataRecord, RecordStream, SharedWriter};
 
 pub type RecordFilterRule = Arc<dyn Fn(&DataRecord) -> bool + Send + Sync>;
 
@@ -14,10 +14,7 @@ pub struct FilteringReader<R: DataReader> {
 
 impl<R: DataReader> FilteringReader<R> {
     pub fn new(reader: R) -> Self {
-        Self {
-            reader,
-            rules: Vec::new(),
-        }
+        Self { reader, rules: Vec::new() }
     }
 
     pub fn add<F>(mut self, rule: F) -> Self

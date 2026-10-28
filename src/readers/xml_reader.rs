@@ -1,13 +1,13 @@
 use async_stream::try_stream;
 use indexmap::IndexMap;
-use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
 use crate::core::error::DataGenieError;
-use crate::core::interfaces::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
-use crate::core::transport_utils::{ensure_data_source, SourceInput};
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 
 #[derive(Debug, Clone)]
 pub struct XMLReaderOptions {
@@ -112,19 +112,12 @@ impl XMLReader {
         }
     }
 
-    fn attach_attributes(
-        obj: &mut Map<String, Value>,
-        e: &BytesStart<'_>,
-        strip_namespaces: bool,
-    ) -> std::result::Result<(), String> {
+    fn attach_attributes(obj: &mut Map<String, Value>, e: &BytesStart<'_>, strip_namespaces: bool) -> std::result::Result<(), String> {
         for attr_res in e.attributes() {
             let attr = attr_res.map_err(|err| err.to_string())?;
             let key_raw = String::from_utf8_lossy(attr.key.as_ref()).to_string();
             let key = Self::clean_name(&key_raw, strip_namespaces);
-            let val = attr
-                .unescape_value()
-                .map_err(|err| err.to_string())?
-                .to_string();
+            let val = attr.unescape_value().map_err(|err| err.to_string())?.to_string();
             obj.insert(format!("@{}", key), Value::String(val));
         }
         Ok(())
@@ -365,10 +358,7 @@ impl DataReader for XMLReader {
     }
 }
 
-fn map_to_record(
-    map: Map<String, Value>,
-    field_mapping: Option<&IndexMap<String, String>>,
-) -> DataRecord {
+fn map_to_record(map: Map<String, Value>, field_mapping: Option<&IndexMap<String, String>>) -> DataRecord {
     if let Some(mapping) = field_mapping {
         let root_val = Value::Object(map);
         let mut record = DataRecord::new();

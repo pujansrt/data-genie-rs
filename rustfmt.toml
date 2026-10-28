@@ -1,0 +1,23 @@
+# Rust edition (match Cargo.toml)
+edition = "2024"
+style_edition = "2024"
+
+# Line length and indentation
+max_width = 160
+hard_tabs = false
+tab_spaces = 4
+
+# Formatting behaviour
+use_small_heuristics = "Default"
+newline_style = "Unix"
+
+# Imports and modules
+reorder_imports = true
+reorder_modules = true
+
+# Code simplification
+use_field_init_shorthand = true
+use_try_shorthand = true
+
+# Derive attributes
+merge_derives = true

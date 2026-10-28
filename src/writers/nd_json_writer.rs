@@ -3,8 +3,8 @@ use std::pin::Pin;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataRecord, DataSink, DataWriter};
-use crate::core::transport_utils::{ensure_data_sink, SinkInput};
+use crate::core::traits::{DataRecord, DataSink, DataWriter};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 /// Streaming Newline-Delimited JSON (NDJSON) writer.
 pub struct NDJsonWriter {

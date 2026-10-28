@@ -4,8 +4,8 @@ use std::pin::Pin;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::core::error::Result;
-use crate::core::interfaces::{value_to_string, DataRecord, DataSink, DataWriter};
-use crate::core::transport_utils::{ensure_data_sink, SinkInput};
+use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 /// Streaming CSV writer that automatically writes headers from the first record unless disabled.
 pub struct CSVWriter {
@@ -38,9 +38,7 @@ impl CSVWriter {
     }
 
     fn format_csv_row(fields: &[String]) -> Result<Vec<u8>> {
-        let mut wtr = csv::WriterBuilder::new()
-            .has_headers(false)
-            .from_writer(Vec::new());
+        let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(Vec::new());
         wtr.write_record(fields)?;
         wtr.flush()?;
         Ok(wtr.into_inner().unwrap_or_default())

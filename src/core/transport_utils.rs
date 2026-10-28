@@ -4,10 +4,10 @@ use std::sync::Arc;
 use crate::core::file_transport::{FileSink, FileSource};
 #[cfg(feature = "http")]
 use crate::core::http_transport::{HttpSink, HttpSource};
-use crate::core::interfaces::{DataSink, DataSource};
 use crate::core::memory_transport::{MemorySink, MemorySource};
 #[cfg(feature = "s3")]
 use crate::core::s3_transport::{S3Sink, S3Source};
+use crate::core::traits::{DataSink, DataSource};
 
 /// Flexible input wrapper allowing readers to accept file paths (`&str`, `String`, `PathBuf`),
 /// raw byte buffers (`Vec<u8>`, `&[u8]`), or any `DataSource` (`MemorySource`, `FileSource`, `HttpSource`, `S3Source`).

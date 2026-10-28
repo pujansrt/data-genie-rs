@@ -5,7 +5,7 @@ use serde_json::{Number, Value};
 use std::sync::Arc;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{DataReader, DataRecord, RecordStream, SharedWriter};
+use crate::core::traits::{DataReader, DataRecord, RecordStream, SharedWriter};
 
 /// Trait representing a schema validator and type coercer (analogous to Zod's `.parse()`).
 pub trait SchemaValidator: Send + Sync {
@@ -144,15 +144,7 @@ impl FieldSchema {
         F: Fn(&Value) -> bool + Send + Sync + 'static,
     {
         let msg = message.into();
-        self.custom_check = Some(Arc::new(
-            move |v: &Value| {
-                if check(v) {
-                    Ok(())
-                } else {
-                    Err(msg.clone())
-                }
-            },
-        ));
+        self.custom_check = Some(Arc::new(move |v: &Value| if check(v) { Ok(()) } else { Err(msg.clone()) }));
         self
     }
 
@@ -161,77 +153,45 @@ impl FieldSchema {
             if self.optional {
                 return Ok(None);
             }
-            return Err(DataGenieError::Validation(format!(
-                "Field '{}' is required",
-                field_name
-            )));
+            return Err(DataGenieError::Validation(format!("Field '{}' is required", field_name)));
         };
 
         if v.is_null() {
             if self.nullable || self.optional {
                 return Ok(Some(Value::Null));
             }
-            return Err(DataGenieError::Validation(format!(
-                "Field '{}' cannot be null",
-                field_name
-            )));
+            return Err(DataGenieError::Validation(format!("Field '{}' cannot be null", field_name)));
         }
 
         let coerced = match self.field_type {
             SchemaFieldType::Any => v.clone(),
             SchemaFieldType::String => match v {
                 Value::String(s) => Value::String(s.clone()),
-                other if self.coerce => {
-                    Value::String(crate::core::interfaces::value_to_string(other))
-                }
-                _ => {
-                    return Err(DataGenieError::Validation(format!(
-                        "Field '{}' expected string, got {}",
-                        field_name, v
-                    )))
-                }
+                other if self.coerce => Value::String(crate::core::traits::value_to_string(other)),
+                _ => return Err(DataGenieError::Validation(format!("Field '{}' expected string, got {}", field_name, v))),
             },
             SchemaFieldType::Number => match v {
                 Value::Number(n) => Value::Number(n.clone()),
                 Value::String(s) if self.coerce => {
-                    let parsed = s.trim().parse::<f64>().map_err(|_| {
-                        DataGenieError::Validation(format!(
-                            "Field '{}' could not coerce '{}' to number",
-                            field_name, s
-                        ))
-                    })?;
-                    let num = Number::from_f64(parsed).ok_or_else(|| {
-                        DataGenieError::Validation(format!(
-                            "Field '{}' invalid float '{}'",
-                            field_name, s
-                        ))
-                    })?;
+                    let parsed = s
+                        .trim()
+                        .parse::<f64>()
+                        .map_err(|_| DataGenieError::Validation(format!("Field '{}' could not coerce '{}' to number", field_name, s)))?;
+                    let num = Number::from_f64(parsed).ok_or_else(|| DataGenieError::Validation(format!("Field '{}' invalid float '{}'", field_name, s)))?;
                     Value::Number(num)
                 }
-                _ => {
-                    return Err(DataGenieError::Validation(format!(
-                        "Field '{}' expected number, got {}",
-                        field_name, v
-                    )))
-                }
+                _ => return Err(DataGenieError::Validation(format!("Field '{}' expected number, got {}", field_name, v))),
             },
             SchemaFieldType::Integer => match v {
                 Value::Number(n) if n.is_i64() || n.is_u64() => Value::Number(n.clone()),
                 Value::String(s) if self.coerce => {
-                    let parsed = s.trim().parse::<i64>().map_err(|_| {
-                        DataGenieError::Validation(format!(
-                            "Field '{}' could not coerce '{}' to integer",
-                            field_name, s
-                        ))
-                    })?;
+                    let parsed = s
+                        .trim()
+                        .parse::<i64>()
+                        .map_err(|_| DataGenieError::Validation(format!("Field '{}' could not coerce '{}' to integer", field_name, s)))?;
                     Value::Number(Number::from(parsed))
                 }
-                _ => {
-                    return Err(DataGenieError::Validation(format!(
-                        "Field '{}' expected integer, got {}",
-                        field_name, v
-                    )))
-                }
+                _ => return Err(DataGenieError::Validation(format!("Field '{}' expected integer, got {}", field_name, v))),
             },
             SchemaFieldType::Boolean => match v {
                 Value::Bool(b) => Value::Bool(*b),
@@ -242,15 +202,10 @@ impl FieldSchema {
                         return Err(DataGenieError::Validation(format!(
                             "Field '{}' could not coerce '{}' to boolean",
                             field_name, s
-                        )))
+                        )));
                     }
                 },
-                _ => {
-                    return Err(DataGenieError::Validation(format!(
-                        "Field '{}' expected boolean, got {}",
-                        field_name, v
-                    )))
-                }
+                _ => return Err(DataGenieError::Validation(format!("Field '{}' expected boolean, got {}", field_name, v))),
             },
         };
 
@@ -291,10 +246,7 @@ impl FieldSchema {
 
         if let Some(ref check) = self.custom_check {
             if let Err(msg) = check(&coerced) {
-                return Err(DataGenieError::Validation(format!(
-                    "Field '{}': {}",
-                    field_name, msg
-                )));
+                return Err(DataGenieError::Validation(format!("Field '{}': {}", field_name, msg)));
             }
         }
 

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataRecord, DataWriter};
+use crate::core::traits::{DataRecord, DataWriter};
 
 /// Writes each `DataRecord` as JSON to stdout and prints a completion banner on close.
 #[derive(Debug, Default, Clone)]

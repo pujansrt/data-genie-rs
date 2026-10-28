@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::core::expr::{is_truthy, Expr};
-use crate::core::interfaces::DataRecord;
+use crate::core::expr::{Expr, is_truthy};
+use crate::core::traits::DataRecord;
 
 /// Evaluates boolean filter expressions (e.g., `"(status == 'OK' || status == 'ERROR') && age > 30"`)
 /// against streaming `DataRecord` items.

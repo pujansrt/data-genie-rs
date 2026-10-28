@@ -1,0 +1,2 @@
+[alias]
+cov = "run --example coverage-report --"

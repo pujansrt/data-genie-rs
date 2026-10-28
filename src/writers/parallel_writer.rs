@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{DataRecord, DataWriter};
+use crate::core::traits::{DataRecord, DataWriter};
 
 #[derive(Debug, Clone)]
 pub struct ParallelWriterOptions {
@@ -14,9 +14,7 @@ pub struct ParallelWriterOptions {
 
 impl Default for ParallelWriterOptions {
     fn default() -> Self {
-        let cpus = std::thread::available_parallelism()
-            .map(|n| (n.get() / 2).max(1))
-            .unwrap_or(2);
+        let cpus = std::thread::available_parallelism().map(|n| (n.get() / 2).max(1)).unwrap_or(2);
         Self {
             concurrency: cpus,
             batch_size: 100,
@@ -143,9 +141,7 @@ impl DataWriter for ParallelWriter {
 
         let handles = std::mem::take(&mut self.handles);
         for handle in handles {
-            let worker_res = handle
-                .await
-                .map_err(|e| DataGenieError::Other(format!("Parallel worker panicked: {}", e)))?;
+            let worker_res = handle.await.map_err(|e| DataGenieError::Other(format!("Parallel worker panicked: {}", e)))?;
             worker_res?;
         }
         Ok(())

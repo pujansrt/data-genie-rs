@@ -4,8 +4,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::core::error::DataGenieError;
-use crate::core::interfaces::{DataReader, DataRecord, DataSource, RecordStream};
-use crate::core::transport_utils::{ensure_data_source, SourceInput};
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 use crate::transformers::SchemaValidator;
 
 #[derive(Clone, Default)]

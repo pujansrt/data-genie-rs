@@ -6,8 +6,8 @@ use std::pin::Pin;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{DataRecord, DataSink, DataWriter};
-use crate::core::transport_utils::{ensure_data_sink, SinkInput};
+use crate::core::traits::{DataRecord, DataSink, DataWriter};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 const WRITE_BUFFER_THRESHOLD: usize = 256 * 1024; // 256KB batch buffer
 
@@ -59,11 +59,7 @@ impl Formatter for RecordPrettyFormatter {
     }
 
     #[inline]
-    fn begin_array_value<W: ?Sized + io::Write>(
-        &mut self,
-        writer: &mut W,
-        first: bool,
-    ) -> io::Result<()> {
+    fn begin_array_value<W: ?Sized + io::Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
         if first {
             writer.write_all(b"\n")?;
         } else {
@@ -96,11 +92,7 @@ impl Formatter for RecordPrettyFormatter {
     }
 
     #[inline]
-    fn begin_object_key<W: ?Sized + io::Write>(
-        &mut self,
-        writer: &mut W,
-        first: bool,
-    ) -> io::Result<()> {
+    fn begin_object_key<W: ?Sized + io::Write>(&mut self, writer: &mut W, first: bool) -> io::Result<()> {
         if first {
             writer.write_all(b"\n")?;
         } else {
@@ -155,9 +147,7 @@ impl JsonWriter {
 impl DataWriter for JsonWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
         if self.is_closed {
-            return Err(DataGenieError::Other(
-                "Writer is already closed".to_string(),
-            ));
+            return Err(DataGenieError::Other("Writer is already closed".to_string()));
         }
         self.ensure_stream().await?;
 

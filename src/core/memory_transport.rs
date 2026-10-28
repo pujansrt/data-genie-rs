@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataSink, DataSource};
+use crate::core::traits::{DataSink, DataSource};
 
 /// In-memory `DataSource` backed by a byte buffer or string.
 #[derive(Debug, Clone)]
@@ -57,11 +57,7 @@ pub struct SharedVecWriter {
 }
 
 impl AsyncWrite for SharedVecWriter {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
+    fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         let mut guard = self.buffer.lock().unwrap();
         guard.extend_from_slice(buf);
         Poll::Ready(Ok(buf.len()))

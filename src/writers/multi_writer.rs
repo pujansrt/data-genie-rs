@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataRecord, DataWriter};
+use crate::core::traits::{DataRecord, DataWriter};
 
 /// Fan-out writer that writes every record to multiple underlying `DataWriter` sinks.
 pub struct MultiWriter {

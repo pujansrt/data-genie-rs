@@ -17,10 +17,7 @@ fn generate_heavy_data() -> data_genie::Result<()> {
 
     writer.write_all(b"id,timestamp,sensor_id,value,status\n")?;
 
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
 
     for i in 0..TOTAL_RECORDS {
         let val = ((i * 7919) % 1000000) as f64 / 10000.0;
@@ -55,23 +52,16 @@ fn start_conversion() -> data_genie::Result<()> {
         format!("{:.2} MB", file_size_in_mb)
     };
 
-    println!(
-        "🔄 Starting {} Streaming Conversion (CSV -> JSON)...",
-        size_display
-    );
+    println!("🔄 Starting {} Streaming Conversion (CSV -> JSON)...", size_display);
     let start_time = Instant::now();
 
-    let reader =
-        ValidatingReader::new(CSVReader::new(FILE_PATH)).with_dlq(JsonWriter::new(OUTPUT_DLQ_PATH));
+    let reader = ValidatingReader::new(CSVReader::new(FILE_PATH)).with_dlq(JsonWriter::new(OUTPUT_DLQ_PATH));
     let writer = JsonWriter::new(OUTPUT_PATH);
 
     let mut job = Job::with_options(reader, writer, JobOptions::new().with_progress(false));
 
     job.on_progress(|m| {
-        print!(
-            "\r⏳ Processed: {} | {:.0} rec/sec",
-            m.record_count, m.records_per_second
-        );
+        print!("\r⏳ Processed: {} | {:.0} rec/sec", m.record_count, m.records_per_second);
         let _ = io::stdout().flush();
     });
 

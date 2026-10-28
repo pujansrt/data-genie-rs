@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{DataReader, DataRecord, RecordStream};
+use crate::core::traits::{DataReader, DataRecord, RecordStream};
 use crate::transformers::SchemaValidator;
 
 pub type ResultsExtractor = Arc<dyn Fn(&Value) -> Result<Vec<DataRecord>> + Send + Sync>;
@@ -79,9 +79,7 @@ impl HttpReader {
                 }
                 records.push(rec);
             } else {
-                return Err(DataGenieError::Http(
-                    "HttpReader: Record in array is not a JSON object.".to_string(),
-                ));
+                return Err(DataGenieError::Http("HttpReader: Record in array is not a JSON object.".to_string()));
             }
         }
         Ok(records)

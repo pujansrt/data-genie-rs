@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::core::error::Result;
-use crate::core::interfaces::{ConsoleLogger, DataReader, DataRecord, DataWriter, Logger};
+use crate::core::traits::{ConsoleLogger, DataReader, DataRecord, DataWriter, Logger};
 
 /// Runs a future to completion on a multi-threaded Tokio runtime without requiring `#[tokio::main]`
 /// or a direct `tokio` dependency in downstream crates.
@@ -138,10 +138,7 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
     }
 
     /// Registers a listener for the `'error'` lifecycle event.
-    pub fn on_error<F: FnMut(&str, Option<&DataRecord>) + Send + 'static>(
-        &mut self,
-        cb: F,
-    ) -> &mut Self {
+    pub fn on_error<F: FnMut(&str, Option<&DataRecord>) + Send + 'static>(&mut self, cb: F) -> &mut Self {
         self.on_error.push(Box::new(cb));
         self
     }
@@ -205,13 +202,10 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
                     record_count += 1;
                 }
 
-                if record_count % 1000 == 0
-                    || (record_count & 255 == 0 && last_update.elapsed().as_millis() > 200)
-                {
+                if record_count % 1000 == 0 || (record_count & 255 == 0 && last_update.elapsed().as_millis() > 200) {
                     let now = Utc::now();
                     let duration_ms = start_instant.elapsed().as_millis() as u64;
-                    let current_metrics =
-                        Self::calculate_metrics(start_time, now, duration_ms, record_count);
+                    let current_metrics = Self::calculate_metrics(start_time, now, duration_ms, record_count);
 
                     for cb in &mut self.on_progress {
                         cb(&current_metrics);
@@ -220,10 +214,7 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
                     if show_progress {
                         let rps = current_metrics.records_per_second;
                         let elapsed = current_metrics.duration_ms as f64 / 1000.0;
-                        print!(
-                            "\r⏳ Processing: {} records | {:.0} rec/sec | {:.1}s elapsed",
-                            record_count, rps, elapsed
-                        );
+                        print!("\r⏳ Processing: {} records | {:.0} rec/sec | {:.1}s elapsed", record_count, rps, elapsed);
                         let _ = std::io::stdout().flush();
                     }
                     last_update = Instant::now();
@@ -248,14 +239,8 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
 
         logger.info("\n--- Job Completed ---");
         logger.info(&format!("Processed: {} records", record_count));
-        logger.info(&format!(
-            "Duration:  {:.2}s",
-            metrics.duration_ms as f64 / 1000.0
-        ));
-        logger.info(&format!(
-            "Throughput: {:.2} rec/sec",
-            metrics.records_per_second
-        ));
+        logger.info(&format!("Duration:  {:.2}s", metrics.duration_ms as f64 / 1000.0));
+        logger.info(&format!("Throughput: {:.2} rec/sec", metrics.records_per_second));
 
         for cb in &mut self.on_complete {
             cb(&metrics);
@@ -276,12 +261,7 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
         Ok((metrics, self.writer))
     }
 
-    fn calculate_metrics(
-        start_time: DateTime<Utc>,
-        end_time: DateTime<Utc>,
-        duration_ms: u64,
-        record_count: usize,
-    ) -> JobMetrics {
+    fn calculate_metrics(start_time: DateTime<Utc>, end_time: DateTime<Utc>, duration_ms: u64, record_count: usize) -> JobMetrics {
         let records_per_second = if duration_ms > 0 {
             (record_count as f64 / duration_ms as f64) * 1000.0
         } else {
@@ -313,21 +293,13 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
     }
 
     /// Static convenience method to run a job with custom `JobOptions`.
-    pub async fn run_with_options<R: DataReader, W: DataWriter>(
-        reader: R,
-        writer: W,
-        options: JobOptions,
-    ) -> Result<JobMetrics> {
+    pub async fn run_with_options<R: DataReader, W: DataWriter>(reader: R, writer: W, options: JobOptions) -> Result<JobMetrics> {
         let mut job = Job::with_options(reader, writer, options);
         job.execute().await
     }
 
     /// Previews the first `limit` records of a stream without writing them to a destination.
-    pub async fn preview<R: DataReader>(
-        mut reader: R,
-        limit: Option<usize>,
-        logger: Option<Arc<dyn Logger>>,
-    ) -> Result<Vec<DataRecord>> {
+    pub async fn preview<R: DataReader>(mut reader: R, limit: Option<usize>, logger: Option<Arc<dyn Logger>>) -> Result<Vec<DataRecord>> {
         let default_logger: Arc<dyn Logger> = Arc::new(ConsoleLogger);
         let log = logger.as_ref().unwrap_or(&default_logger);
         let max_records = limit.unwrap_or(5);
@@ -349,33 +321,19 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
             log.warn("No records found to preview.");
         } else {
             for (idx, rec) in preview_records.iter().enumerate() {
-                log.info(&format!(
-                    "[{}] {}",
-                    idx,
-                    serde_json::to_string(rec).unwrap_or_default()
-                ));
+                log.info(&format!("[{}] {}", idx, serde_json::to_string(rec).unwrap_or_default()));
             }
-            log.info(&format!(
-                "--- Preview Complete ({} records shown) ---",
-                preview_records.len()
-            ));
+            log.info(&format!("--- Preview Complete ({} records shown) ---", preview_records.len()));
         }
 
         Ok(preview_records)
     }
 
     /// Samples the first N records from a reader and infers Rust, TypeScript, Zod, and SQL schemas.
-    pub async fn infer_schema<R: DataReader>(
-        mut reader: R,
-        options: InferSchemaOptions,
-    ) -> Result<InferredSchema> {
+    pub async fn infer_schema<R: DataReader>(mut reader: R, options: InferSchemaOptions) -> Result<InferredSchema> {
         let sample_size = options.sample_size.unwrap_or(1000);
-        let table_name = options
-            .table_name
-            .unwrap_or_else(|| "inferred_table".to_string());
-        let interface_name = options
-            .interface_name
-            .unwrap_or_else(|| "InferredRecord".to_string());
+        let table_name = options.table_name.unwrap_or_else(|| "inferred_table".to_string());
+        let interface_name = options.interface_name.unwrap_or_else(|| "InferredRecord".to_string());
 
         let mut field_stats: IndexMap<String, (HashSet<String>, bool)> = IndexMap::new();
         let mut count = 0;
@@ -387,9 +345,7 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
             };
 
             for (key, value) in &record {
-                let entry = field_stats
-                    .entry(key.clone())
-                    .or_insert_with(|| (HashSet::new(), false));
+                let entry = field_stats.entry(key.clone()).or_insert_with(|| (HashSet::new(), false));
 
                 match value {
                     Value::Null => {

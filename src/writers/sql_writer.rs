@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{DataRecord, DataWriter, SqlConnection};
+use crate::core::traits::{DataRecord, DataWriter, SqlConnection};
 
 /// SQL dialect selector for bulk inserts and idempotent upserts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,9 +68,7 @@ impl SQLWriter {
 
     pub fn set_batch_size(mut self, size: usize) -> Result<Self> {
         if size < 1 {
-            return Err(DataGenieError::Config(
-                "Batch size must be at least 1".to_string(),
-            ));
+            return Err(DataGenieError::Config("Batch size must be at least 1".to_string()));
         }
         self.batch_size = size;
         Ok(self)
@@ -106,12 +104,7 @@ impl SQLWriter {
             return self.flush_oracle().await;
         }
 
-        let columns = self
-            .field_names
-            .iter()
-            .map(|n| format!("\"{}\"", n))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let columns = self.field_names.iter().map(|n| format!("\"{}\"", n)).collect::<Vec<_>>().join(", ");
 
         let mut rows = Vec::with_capacity(self.buffer.len());
         let mut values = Vec::with_capacity(self.buffer.len() * self.field_names.len());
@@ -135,12 +128,7 @@ impl SQLWriter {
             }
         }
 
-        let mut sql = format!(
-            "INSERT INTO \"{}\" ({}) VALUES {}",
-            self.table_name,
-            columns,
-            rows.join(", ")
-        );
+        let mut sql = format!("INSERT INTO \"{}\" ({}) VALUES {}", self.table_name, columns, rows.join(", "));
 
         if let Some(ref conflict_key) = self.conflict_key {
             match self.dialect {
@@ -152,10 +140,7 @@ impl SQLWriter {
                         .map(|n| format!("\"{}\" = EXCLUDED.\"{}\"", n, n))
                         .collect::<Vec<_>>()
                         .join(", ");
-                    sql.push_str(&format!(
-                        " ON CONFLICT (\"{}\") DO UPDATE SET {}",
-                        conflict_key, updates
-                    ));
+                    sql.push_str(&format!(" ON CONFLICT (\"{}\") DO UPDATE SET {}", conflict_key, updates));
                 }
                 SqlDialect::MySql => {
                     let updates = self
@@ -177,10 +162,7 @@ impl SQLWriter {
                 Ok(())
             }
             Err(err) => {
-                if self.use_transaction
-                    && self.transaction_started
-                    && self.db_client.supports_transactions()
-                {
+                if self.use_transaction && self.transaction_started && self.db_client.supports_transactions() {
                     let _ = self.db_client.rollback().await;
                     self.transaction_started = false;
                 }
@@ -190,12 +172,7 @@ impl SQLWriter {
     }
 
     async fn flush_oracle(&mut self) -> Result<()> {
-        let columns = self
-            .field_names
-            .iter()
-            .map(|n| format!("\"{}\"", n))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let columns = self.field_names.iter().map(|n| format!("\"{}\"", n)).collect::<Vec<_>>().join(", ");
         let mut values = Vec::new();
         let mut param_index = 1usize;
 
@@ -208,12 +185,7 @@ impl SQLWriter {
                 .map(|n| format!("target.\"{}\" = src.\"{}\"", n, n))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let insert_values = self
-                .field_names
-                .iter()
-                .map(|n| format!("src.\"{}\"", n))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let insert_values = self.field_names.iter().map(|n| format!("src.\"{}\"", n)).collect::<Vec<_>>().join(", ");
             let src_values = self
                 .field_names
                 .iter()
@@ -246,10 +218,7 @@ impl SQLWriter {
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
-                s.push_str(&format!(
-                    "INTO \"{}\" ({}) VALUES ({}) ",
-                    self.table_name, columns, row_values
-                ));
+                s.push_str(&format!("INTO \"{}\" ({}) VALUES ({}) ", self.table_name, columns, row_values));
                 for n in &self.field_names {
                     values.push(record.get(n).cloned().unwrap_or(Value::Null));
                 }
@@ -267,10 +236,7 @@ impl SQLWriter {
 #[async_trait]
 impl DataWriter for SQLWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
-        if self.use_transaction
-            && !self.transaction_started
-            && self.db_client.supports_transactions()
-        {
+        if self.use_transaction && !self.transaction_started && self.db_client.supports_transactions() {
             self.db_client.begin_transaction().await?;
             self.transaction_started = true;
         }
@@ -291,20 +257,14 @@ impl DataWriter for SQLWriter {
     async fn close(&mut self) -> Result<()> {
         let flush_res = self.flush().await;
         if let Err(err) = flush_res {
-            if self.use_transaction
-                && self.transaction_started
-                && self.db_client.supports_transactions()
-            {
+            if self.use_transaction && self.transaction_started && self.db_client.supports_transactions() {
                 let _ = self.db_client.rollback().await;
                 self.transaction_started = false;
             }
             return Err(err);
         }
 
-        if self.use_transaction
-            && self.transaction_started
-            && self.db_client.supports_transactions()
-        {
+        if self.use_transaction && self.transaction_started && self.db_client.supports_transactions() {
             self.db_client.commit().await?;
             self.transaction_started = false;
         }

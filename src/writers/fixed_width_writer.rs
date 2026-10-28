@@ -3,8 +3,8 @@ use std::pin::Pin;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{value_to_string, DataRecord, DataSink, DataWriter};
-use crate::core::transport_utils::{ensure_data_sink, SinkInput};
+use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 /// Streaming Fixed-Width text writer with configurable column widths and optional header row.
 pub struct FixedWidthWriter {
@@ -33,9 +33,7 @@ impl FixedWidthWriter {
     pub fn set_field_widths<I: IntoIterator<Item = usize>>(mut self, widths: I) -> Result<Self> {
         let collected: Vec<usize> = widths.into_iter().collect();
         if collected.iter().any(|&w| w == 0) {
-            return Err(DataGenieError::Config(
-                "Field widths must be positive numbers.".to_string(),
-            ));
+            return Err(DataGenieError::Config("Field widths must be positive numbers.".to_string()));
         }
         self.field_widths = collected;
         Ok(self)
@@ -43,10 +41,7 @@ impl FixedWidthWriter {
 
     pub fn with_field_widths<I: IntoIterator<Item = usize>>(mut self, widths: I) -> Self {
         let collected: Vec<usize> = widths.into_iter().collect();
-        assert!(
-            collected.iter().all(|&w| w > 0),
-            "Field widths must be positive numbers."
-        );
+        assert!(collected.iter().all(|&w| w > 0), "Field widths must be positive numbers.");
         self.field_widths = collected;
         self
     }

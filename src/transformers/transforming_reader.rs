@@ -2,7 +2,7 @@ use async_stream::try_stream;
 use futures::StreamExt;
 use std::sync::Arc;
 
-use crate::core::interfaces::{DataReader, DataRecord, RecordStream, SharedWriter};
+use crate::core::traits::{DataReader, DataRecord, RecordStream, SharedWriter};
 
 pub type RecordTransformation = Arc<dyn Fn(DataRecord) -> DataRecord + Send + Sync>;
 

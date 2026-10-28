@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use crate::core::expr::Expr;
-use crate::core::interfaces::{value_to_string, DataRecord};
+use crate::core::traits::{DataRecord, value_to_string};
 use crate::transformers::transforming_reader::RecordTransformation;
 
 /// Common type conversions and default-value transformations for one or more record fields.
@@ -51,10 +51,7 @@ impl BasicFieldTransformer {
                     if let Ok(parsed) = trimmed.parse::<i64>() {
                         record.insert(field.clone(), Value::Number(Number::from(parsed)));
                     } else if let Ok(parsed_float) = trimmed.parse::<f64>() {
-                        record.insert(
-                            field.clone(),
-                            Value::Number(Number::from(parsed_float as i64)),
-                        );
+                        record.insert(field.clone(), Value::Number(Number::from(parsed_float as i64)));
                     }
                 }
             }
@@ -88,20 +85,12 @@ impl BasicFieldTransformer {
                     let parsed_iso = if !fmt.is_empty() {
                         NaiveDateTime::parse_from_str(&s, &fmt)
                             .map(|ndt| ndt.and_utc().to_rfc3339())
-                            .or_else(|_| {
-                                NaiveDate::parse_from_str(&s, &fmt).map(|nd| {
-                                    nd.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339()
-                                })
-                            })
+                            .or_else(|_| NaiveDate::parse_from_str(&s, &fmt).map(|nd| nd.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339()))
                             .ok()
                     } else {
                         DateTime::parse_from_rfc3339(&s)
                             .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
-                            .or_else(|_| {
-                                NaiveDate::parse_from_str(&s, "%Y-%m-%d").map(|nd| {
-                                    nd.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339()
-                                })
-                            })
+                            .or_else(|_| NaiveDate::parse_from_str(&s, "%Y-%m-%d").map(|nd| nd.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339()))
                             .ok()
                     };
 
@@ -309,10 +298,7 @@ impl MapFields {
         let input_fields = self.input_fields.clone();
         let mapper = Arc::clone(&self.mapper);
         Arc::new(move |mut record: DataRecord| {
-            let args: Vec<Value> = input_fields
-                .iter()
-                .map(|f| record.get(f).cloned().unwrap_or(Value::Null))
-                .collect();
+            let args: Vec<Value> = input_fields.iter().map(|f| record.get(f).cloned().unwrap_or(Value::Null)).collect();
             let result = mapper(&args);
             record.insert(output_field.clone(), result);
             record

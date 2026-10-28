@@ -4,26 +4,29 @@ Pipelines chain multiple operations together as records stream from a `DataReade
 
 ## Programmatic Pipelines (Rust)
 
-### Fluent Extension Methods (`ReaderExt`)
+### Composing Pipeline Readers
 
-With `ReaderExt`, you can chain `.filter_expr()`, `.transform()`, and `.validate_rule()` directly on any reader:
+Chain `FilteringReader`, `TransformingReader`, and `ValidatingReader` around any source reader:
 
 ```rust
-use data_genie::{CSVReader, Job, JsonWriter, ReaderExt};
+use data_genie::{CSVReader, FilterExpression, FilteringReader, Job, JsonWriter, TransformingReader};
 use serde_json::json;
 
 fn main() -> data_genie::Result<()> {
-    let pipeline = CSVReader::new("users.csv")
-        .filter_expr("age >= 18")
-        .transform(|mut r| {
-            let full = format!(
-                "{} {}",
-                r.get("fname").and_then(|v| v.as_str()).unwrap_or(""),
-                r.get("lname").and_then(|v| v.as_str()).unwrap_or("")
-            );
-            r.insert("fullName".to_string(), json!(full));
-            Some(r)
-        });
+    let reader = CSVReader::new("users.csv");
+
+    let filtered = FilteringReader::new(reader)
+        .add_rule(FilterExpression::new("age >= 18").create_record_filter());
+
+    let pipeline = TransformingReader::new(filtered).add(|mut r| {
+        let full = format!(
+            "{} {}",
+            r.get("fname").and_then(|v| v.as_str()).unwrap_or(""),
+            r.get("lname").and_then(|v| v.as_str()).unwrap_or("")
+        );
+        r.insert("fullName".to_string(), json!(full));
+        r
+    });
 
     Job::run_blocking(pipeline, JsonWriter::new("output.json"))?;
     Ok(())

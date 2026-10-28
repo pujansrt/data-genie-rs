@@ -1,19 +1,15 @@
 use async_trait::async_trait;
 use data_genie::{
-    between, block_on, greater_than, is_empty, is_not_null, is_type, less_than, pattern_match,
-    record, value_match, BasicFieldTransformer, BatchCallbackWriter, CSVReader, CSVWriter,
-    CallbackWriter, DataGenieError, DataReaderExt, DataRecord, DataWriter, FieldFilter,
-    FieldSchema, FieldValidator, FilterExpression, FilteringReader, FixedWidthReader,
-    FixedWidthWriter, GroupByReader, InferSchemaOptions, Job, JsonReader, JsonWriter, MapFields,
-    MaskStrategy, MemoryReader, MemorySink, MemorySource, MemoryWriter, MultiWriter, NDJsonReader,
-    NDJsonWriter, PIIMaskingTransformer, ParallelWriter, ParallelWriterOptions, PipelineParser,
-    RecordSchema, RemoveDuplicatesReader, RemoveFields, RenameField, Result, RetryOptions,
-    RetryingWriter, SQLReader, SQLWriter, SchemaValidatingReader, SelectFields, SetCalculatedField,
-    SetField, SqlConnection, SqlDialect, TSVReader, TSVWriter, TransformingReader,
-    ValidatingReader, XMLReader, XMLReaderOptions, XMLWriter, XMLWriterOptions,
+    BasicFieldTransformer, BatchCallbackWriter, CSVReader, CSVWriter, CallbackWriter, ConsoleWriter, DataGenieError, DataReader, DataRecord, DataWriter,
+    FieldFilter, FieldSchema, FieldValidator, FilterExpression, FilteringReader, FixedWidthReader, FixedWidthWriter, GroupByReader, InferSchemaOptions, Job,
+    JsonReader, JsonWriter, MapFields, MaskStrategy, MemoryReader, MemorySink, MemorySource, MemoryWriter, MultiWriter, NDJsonReader, NDJsonWriter,
+    PIIMaskingTransformer, ParallelWriter, ParallelWriterOptions, PipelineParser, RecordSchema, RemoveDuplicatesReader, RemoveFields, RenameField, Result,
+    RetryOptions, RetryingWriter, SQLReader, SQLWriter, SchemaValidatingReader, SchemaValidator, SelectFields, SetCalculatedField, SetField, SharedWriter,
+    SqlConnection, SqlDialect, TSVReader, TSVReaderOptions, TSVWriter, TransformingReader, ValidatingReader, XMLReader, XMLReaderOptions, XMLWriter,
+    XMLWriterOptions, between, block_on, greater_than, is_empty, is_not_null, is_type, less_than, pattern_match, record, value_match,
 };
 use indexmap::IndexMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 #[test]
@@ -34,18 +30,11 @@ fn test_csv_read_write_and_dlq() {
 
         assert_eq!(dlq_records.len(), 1);
         assert_eq!(dlq_records[0].get("_type"), Some(&json!("parse_error")));
-        assert!(dlq_records[0]
-            .get("_error")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .contains("Inconsistent column count"));
+        assert!(dlq_records[0].get("_error").unwrap().as_str().unwrap().contains("Inconsistent column count"));
 
         let sink = MemorySink::new();
         let writer = CSVWriter::new(&sink);
-        Job::run(MemoryReader::new(out_records), writer)
-            .await
-            .unwrap();
+        Job::run(MemoryReader::new(out_records), writer).await.unwrap();
         let written_csv = sink.get_text();
         assert_eq!(written_csv, "id,name\n1,foo\n2,bar\n");
     });
@@ -57,17 +46,13 @@ fn test_dlq_propagation_from_validating_reader_to_csv_reader() {
     let dlq = MemoryWriter::new();
     let output = MemoryWriter::new();
 
-    let reader =
-        ValidatingReader::new(CSVReader::new(MemorySource::new(csv_content))).with_dlq(dlq.clone());
+    let reader = ValidatingReader::new(CSVReader::new(MemorySource::new(csv_content))).with_dlq(dlq.clone());
 
     Job::run_blocking(reader, output.clone()).unwrap();
 
     assert_eq!(output.get_records().len(), 2);
     assert_eq!(dlq.get_records().len(), 1);
-    assert_eq!(
-        dlq.get_records()[0].get("_type"),
-        Some(&json!("parse_error"))
-    );
+    assert_eq!(dlq.get_records()[0].get("_type"), Some(&json!("parse_error")));
 }
 
 #[test]
@@ -81,10 +66,7 @@ fn test_json_and_ndjson_dlq_and_streaming() {
         Job::run(reader, out.clone()).await.unwrap();
         assert_eq!(out.get_records().len(), 0);
         assert_eq!(dlq.get_records().len(), 1);
-        assert_eq!(
-            dlq.get_records()[0].get("_type"),
-            Some(&json!("parse_error"))
-        );
+        assert_eq!(dlq.get_records()[0].get("_type"), Some(&json!("parse_error")));
 
         let json_content = r#"[{"id": 1, "name": "foo"}, {"id": 2}]"#;
         let dlq2 = MemoryWriter::new();
@@ -102,10 +84,7 @@ fn test_json_and_ndjson_dlq_and_streaming() {
         assert_eq!(out2.get_records().len(), 1);
         assert_eq!(dlq2.get_records().len(), 1);
         assert_eq!(dlq2.get_records()[0].get("id"), Some(&json!(2)));
-        assert_eq!(
-            dlq2.get_records()[0].get("_errors"),
-            Some(&json!(["Name is missing"]))
-        );
+        assert_eq!(dlq2.get_records()[0].get("_errors"), Some(&json!(["Name is missing"])));
 
         let ndjson_content = "{\"id\": 1}\n{\"id\": 2, malformed}\n{\"id\": 3}";
         let dlq3 = MemoryWriter::new();
@@ -114,28 +93,15 @@ fn test_json_and_ndjson_dlq_and_streaming() {
         Job::run(reader3, out3.clone()).await.unwrap();
         assert_eq!(out3.get_records().len(), 2);
         assert_eq!(dlq3.get_records().len(), 1);
-        assert_eq!(
-            dlq3.get_records()[0].get("_type"),
-            Some(&json!("parse_error"))
-        );
+        assert_eq!(dlq3.get_records()[0].get("_type"), Some(&json!("parse_error")));
 
         let json_sink = MemorySink::new();
-        Job::run(
-            MemoryReader::new(out3.get_records()),
-            JsonWriter::new(&json_sink),
-        )
-        .await
-        .unwrap();
+        Job::run(MemoryReader::new(out3.get_records()), JsonWriter::new(&json_sink)).await.unwrap();
         let parsed_back: Vec<DataRecord> = serde_json::from_str(&json_sink.get_text()).unwrap();
         assert_eq!(parsed_back.len(), 2);
 
         let ndjson_sink = MemorySink::new();
-        Job::run(
-            MemoryReader::new(out3.get_records()),
-            NDJsonWriter::new(&ndjson_sink),
-        )
-        .await
-        .unwrap();
+        Job::run(MemoryReader::new(out3.get_records()), NDJsonWriter::new(&ndjson_sink)).await.unwrap();
         assert_eq!(ndjson_sink.get_text().lines().count(), 2);
     });
 }
@@ -157,44 +123,27 @@ fn test_comprehensive_iot_etl_pipeline() {
 
     let mut pattern_filter = FieldFilter::new("device_id");
     pattern_filter.add_shared_rule(pattern_match(r"^SN-\d+$"));
-    let filtered_reader =
-        FilteringReader::new(reader).add_rule(pattern_filter.create_record_filter());
+    let filtered_reader = FilteringReader::new(reader).add_rule(pattern_filter.create_record_filter());
 
-    let expr_filter =
-        FilterExpression::new("(status == 'OK' || status == 'ERROR') && reading != 'null'");
-    let expr_filtered_reader =
-        FilteringReader::new(filtered_reader).add_rule(expr_filter.create_record_filter());
+    let expr_filter = FilterExpression::new("(status == 'OK' || status == 'ERROR') && reading != 'null'");
+    let expr_filtered_reader = FilteringReader::new(filtered_reader).add_rule(expr_filter.create_record_filter());
 
     let transformed_reader = TransformingReader::new(expr_filtered_reader)
         .add_transform(RenameField::new("device_id", "sensor_id").transform())
-        .add_transform(
-            SetCalculatedField::new(
-                "alert_level",
-                "battery_level < 20 || status == 'ERROR' ? 'HIGH' : 'NORMAL'",
-            )
-            .transform(),
-        )
-        .add_transform(
-            SelectFields::new(["timestamp", "sensor_id", "reading", "alert_level"]).transform(),
-        );
+        .add_transform(SetCalculatedField::new("alert_level", "battery_level < 20 || status == 'ERROR' ? 'HIGH' : 'NORMAL'").transform())
+        .add_transform(SelectFields::new(["timestamp", "sensor_id", "reading", "alert_level"]).transform());
 
     let output = MemoryWriter::new();
     Job::run_blocking(transformed_reader, output.clone()).unwrap();
     let results = output.get_records();
     assert_eq!(results.len(), 3);
 
-    let sn1002 = results
-        .iter()
-        .find(|r| r.get("sensor_id") == Some(&json!("SN-1002")))
-        .unwrap();
+    let sn1002 = results.iter().find(|r| r.get("sensor_id") == Some(&json!("SN-1002"))).unwrap();
     assert_eq!(sn1002.get("alert_level"), Some(&json!("HIGH")));
 
     let low_battery = results
         .iter()
-        .find(|r| {
-            r.get("sensor_id") == Some(&json!("SN-1001"))
-                && r.get("reading") == Some(&json!("70.2"))
-        })
+        .find(|r| r.get("sensor_id") == Some(&json!("SN-1001")) && r.get("reading") == Some(&json!("70.2")))
         .unwrap();
     assert_eq!(low_battery.get("alert_level"), Some(&json!("HIGH")));
 }
@@ -253,9 +202,7 @@ fn test_xml_reader_and_writer() {
     mapping.insert("title".to_string(), "title".to_string());
     mapping.insert("author".to_string(), "author".to_string());
 
-    let opts = XMLReaderOptions::new("//book")
-        .with_strip_namespaces(true)
-        .with_field_mapping(mapping);
+    let opts = XMLReaderOptions::new("//book").with_strip_namespaces(true).with_field_mapping(mapping);
 
     let reader = XMLReader::new(MemorySource::new(xml_data), opts);
     let out = MemoryWriter::new();
@@ -264,10 +211,7 @@ fn test_xml_reader_and_writer() {
     let records = out.get_records();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].get("book_id"), Some(&json!("101")));
-    assert_eq!(
-        records[0].get("title"),
-        Some(&json!("The Rust Programming Language"))
-    );
+    assert_eq!(records[0].get("title"), Some(&json!("The Rust Programming Language")));
 
     let xml_sink = MemorySink::new();
     let xml_writer = XMLWriter::with_options(
@@ -287,9 +231,7 @@ fn test_xml_reader_and_writer() {
 #[cfg(all(feature = "parquet", feature = "xlsx"))]
 #[test]
 fn test_parquet_and_xlsx_roundtrip() {
-    use data_genie::{
-        ParquetFieldSchema, ParquetReader, ParquetSchema, ParquetWriter, XlsxReader, XlsxWriter,
-    };
+    use data_genie::{ParquetFieldSchema, ParquetReader, ParquetSchema, ParquetWriter, XlsxReader, XlsxWriter};
 
     let dir = std::env::temp_dir().join(format!("data_genie_test_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -340,19 +282,12 @@ fn test_s3_transport_and_http_reader() {
 
         let store = S3Source::in_memory();
         let s3_sink = S3Sink::new(Arc::clone(&store), "my-etl-bucket", "exports/users.ndjson");
-        let records = vec![
-            record! { "id" => 1, "user" => "pujan" },
-            record! { "id" => 2, "user" => "genie" },
-        ];
-        Job::run(MemoryReader::new(records), NDJsonWriter::new(s3_sink))
-            .await
-            .unwrap();
+        let records = vec![record! { "id" => 1, "user" => "pujan" }, record! { "id" => 2, "user" => "genie" }];
+        Job::run(MemoryReader::new(records), NDJsonWriter::new(s3_sink)).await.unwrap();
 
         let s3_source = S3Source::new(Arc::clone(&store), "my-etl-bucket", "exports/users.ndjson");
         let s3_out = MemoryWriter::new();
-        Job::run(NDJsonReader::new(s3_source), s3_out.clone())
-            .await
-            .unwrap();
+        Job::run(NDJsonReader::new(s3_source), s3_out.clone()).await.unwrap();
         assert_eq!(s3_out.get_records().len(), 2);
         assert_eq!(s3_out.get_records()[0].get("user"), Some(&json!("pujan")));
 
@@ -384,43 +319,29 @@ fn test_s3_transport_and_http_reader() {
                     } else {
                         "{}".to_string()
                     };
-                    let resp = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        body
-                    );
+                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
                     let _ = socket.write_all(resp.as_bytes()).await;
                 });
             }
         });
 
         let mut http_opts = HttpReaderOptions::default();
-        http_opts.next_page_url = Some(Arc::new(|res: &Value, _curr: &str| {
-            res.get("next").and_then(|v| v.as_str()).map(String::from)
-        }));
+        http_opts.next_page_url = Some(Arc::new(|res: &Value, _curr: &str| res.get("next").and_then(|v| v.as_str()).map(String::from)));
 
         let http_reader = HttpReader::with_options(format!("{}/api/page1", base_url), http_opts);
         let http_out = MemoryWriter::new();
         Job::run(http_reader, http_out.clone()).await.unwrap();
         assert_eq!(http_out.get_records().len(), 2);
-        assert_eq!(
-            http_out.get_records()[1].get("name"),
-            Some(&json!("Page2User"))
-        );
+        assert_eq!(http_out.get_records()[1].get("name"), Some(&json!("Page2User")));
 
         let http_sink = HttpSink::new(format!("{}/upload", base_url));
-        Job::run(
-            MemoryReader::new(vec![record! { "ok" => true }]),
-            JsonWriter::new(http_sink),
-        )
-        .await
-        .unwrap();
+        Job::run(MemoryReader::new(vec![record! { "ok" => true }]), JsonWriter::new(http_sink))
+            .await
+            .unwrap();
 
         let http_src = HttpSource::new(format!("{}/download.csv", base_url));
         let csv_from_http = MemoryWriter::new();
-        Job::run(CSVReader::new(http_src), csv_from_http.clone())
-            .await
-            .unwrap();
+        Job::run(CSVReader::new(http_src), csv_from_http.clone()).await.unwrap();
         assert_eq!(csv_from_http.get_records().len(), 1);
     });
 }
@@ -446,10 +367,7 @@ impl MockSqlConn {
 #[async_trait]
 impl SqlConnection for MockSqlConn {
     async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<DataRecord>> {
-        self.queries
-            .lock()
-            .unwrap()
-            .push((sql.to_string(), params.to_vec()));
+        self.queries.lock().unwrap().push((sql.to_string(), params.to_vec()));
         if sql.contains("OFFSET 2") {
             return Ok(Vec::new());
         }
@@ -459,20 +377,13 @@ impl SqlConnection for MockSqlConn {
 
 #[test]
 fn test_sql_reader_and_writer_dialects() {
-    let sample_rows = vec![
-        record! { "id" => 1, "email" => "a@test.com" },
-        record! { "id" => 2, "email" => "b@test.com" },
-    ];
+    let sample_rows = vec![record! { "id" => 1, "email" => "a@test.com" }, record! { "id" => 2, "email" => "b@test.com" }];
     let conn = Arc::new(MockSqlConn::new(sample_rows.clone()));
 
-    let sql_reader = SQLReader::new(
-        Arc::clone(&conn) as Arc<dyn SqlConnection>,
-        "SELECT * FROM users",
-        vec![],
-    )
-    .set_chunk_size(2)
-    .set_order_by("id")
-    .set_use_transaction(true);
+    let sql_reader = SQLReader::new(Arc::clone(&conn) as Arc<dyn SqlConnection>, "SELECT * FROM users", vec![])
+        .set_chunk_size(2)
+        .set_order_by("id")
+        .set_use_transaction(true);
 
     let sql_writer = SQLWriter::new(Arc::clone(&conn) as Arc<dyn SqlConnection>, "users_target")
         .set_dialect(SqlDialect::Postgres)
@@ -483,9 +394,7 @@ fn test_sql_reader_and_writer_dialects() {
     Job::run_blocking(sql_reader, sql_writer).unwrap();
 
     let queries = conn.recorded_queries();
-    assert!(queries
-        .iter()
-        .any(|(q, _)| q.contains("ORDER BY \"id\" LIMIT 2 OFFSET 0")));
+    assert!(queries.iter().any(|(q, _)| q.contains("ORDER BY \"id\" LIMIT 2 OFFSET 0")));
     assert!(queries.iter().any(|(q, _)| q.contains(
         "INSERT INTO \"users_target\" (\"id\", \"email\") VALUES ($1, $2), ($3, $4) ON CONFLICT (\"id\") DO UPDATE SET \"email\" = EXCLUDED.\"email\""
     )));
@@ -538,11 +447,7 @@ fn test_transformers_filters_groupby_dedup_pii_and_schema() {
         .mask("secret", MaskStrategy::Redact);
 
     let full_name_map = MapFields::new("full_name", ["first", "last"], |args| {
-        json!(format!(
-            "{} {}",
-            args[0].as_str().unwrap_or(""),
-            args[1].as_str().unwrap_or("")
-        ))
+        json!(format!("{} {}", args[0].as_str().unwrap_or(""), args[1].as_str().unwrap_or("")))
     });
 
     let transformed = TransformingReader::new(MemoryReader::new(raw_users))
@@ -577,12 +482,8 @@ fn test_transformers_filters_groupby_dedup_pii_and_schema() {
 
     let schema_dlq = MemoryWriter::new();
     let schema_out = MemoryWriter::new();
-    let schema_input = vec![
-        record! { "id" => "10", "score" => "88.5" },
-        record! { "id" => "bad", "score" => "200.0" },
-    ];
-    let schema_reader = SchemaValidatingReader::new(MemoryReader::new(schema_input), schema)
-        .with_dlq(schema_dlq.clone());
+    let schema_input = vec![record! { "id" => "10", "score" => "88.5" }, record! { "id" => "bad", "score" => "200.0" }];
+    let schema_reader = SchemaValidatingReader::new(MemoryReader::new(schema_input), schema).with_dlq(schema_dlq.clone());
     Job::run_blocking(schema_reader, schema_out.clone()).unwrap();
     assert_eq!(schema_out.get_records().len(), 1);
     assert_eq!(schema_out.get_records()[0].get("id"), Some(&json!(10)));
@@ -601,9 +502,7 @@ fn test_composite_writers_and_infer_schema_and_declarative_yaml() {
             record! { "id" => 2, "name" => "Two", "active" => false },
             record! { "id" => 3, "name" => "Three", "active" => true },
         ];
-        Job::run(MemoryReader::new(records.clone()), multi)
-            .await
-            .unwrap();
+        Job::run(MemoryReader::new(records.clone()), multi).await.unwrap();
         assert_eq!(mem1.len(), 3);
         assert_eq!(mem2.len(), 3);
 
@@ -612,26 +511,16 @@ fn test_composite_writers_and_infer_schema_and_declarative_yaml() {
         let batch_writer = BatchCallbackWriter::new(2, move |b| {
             batches_clone.lock().unwrap().push(b.len());
         });
-        Job::run(MemoryReader::new(records.clone()), batch_writer)
-            .await
-            .unwrap();
+        Job::run(MemoryReader::new(records.clone()), batch_writer).await.unwrap();
         assert_eq!(*batches.lock().unwrap(), vec![2, 1]);
 
         let parallel_count = Arc::new(Mutex::new(0usize));
         let pc_clone = Arc::clone(&parallel_count);
-        let parallel_writer = ParallelWriter::from_handler(
-            ParallelWriterOptions {
-                concurrency: 2,
-                batch_size: 2,
-            },
-            move |chunk| {
-                *pc_clone.lock().unwrap() += chunk.len();
-                Ok(())
-            },
-        );
-        Job::run(MemoryReader::new(records.clone()), parallel_writer)
-            .await
-            .unwrap();
+        let parallel_writer = ParallelWriter::from_handler(ParallelWriterOptions { concurrency: 2, batch_size: 2 }, move |chunk| {
+            *pc_clone.lock().unwrap() += chunk.len();
+            Ok(())
+        });
+        Job::run(MemoryReader::new(records.clone()), parallel_writer).await.unwrap();
         assert_eq!(*parallel_count.lock().unwrap(), 3);
 
         struct FlakyWriter {
@@ -643,9 +532,7 @@ fn test_composite_writers_and_infer_schema_and_declarative_yaml() {
             async fn write(&mut self, record: DataRecord) -> Result<()> {
                 self.attempts += 1;
                 if self.attempts == 1 {
-                    return Err(DataGenieError::Other(
-                        "transient network glitch".to_string(),
-                    ));
+                    return Err(DataGenieError::Other("transient network glitch".to_string()));
                 }
                 self.inner.write(record).await
             }
@@ -668,20 +555,20 @@ fn test_composite_writers_and_infer_schema_and_declarative_yaml() {
                 circuit_reset_timeout_ms: 1000,
             },
         );
-        Job::run(MemoryReader::new(records.clone()), retrying)
-            .await
-            .unwrap();
+        Job::run(MemoryReader::new(records.clone()), retrying).await.unwrap();
         assert_eq!(flaky_mem.len(), 3);
 
         let cb_count = Arc::new(Mutex::new(0usize));
         let cb_clone = Arc::clone(&cb_count);
-        MemoryReader::new(records.clone())
-            .filter(|r| r.get("active") == Some(&json!(true)))
-            .write_to(CallbackWriter::new(move |_| {
+        let filtered = FilteringReader::new(MemoryReader::new(records.clone())).add(|r| r.get("active") == Some(&json!(true)));
+        Job::run(
+            filtered,
+            CallbackWriter::new(move |_| {
                 *cb_clone.lock().unwrap() += 1;
-            }))
-            .await
-            .unwrap();
+            }),
+        )
+        .await
+        .unwrap();
         assert_eq!(*cb_count.lock().unwrap(), 2);
 
         let inferred = Job::infer_schema(
@@ -736,4 +623,274 @@ pipeline:
         assert!(out_json.exists());
         let _ = std::fs::remove_dir_all(&dir);
     });
+}
+
+#[test]
+fn test_console_and_retrying_writer_circuit_breaker() {
+    block_on(async {
+        // 1. ConsoleWriter (new, default, write, close, and via Job)
+        let mut cw = ConsoleWriter::new();
+        cw.write(record! { "id" => 1, "msg" => "hello" }).await.unwrap();
+        cw.close().await.unwrap();
+
+        let cw_default = ConsoleWriter::default();
+        let metrics = Job::run(MemoryReader::new(vec![record! { "k" => "v" }]), cw_default).await.unwrap();
+        assert_eq!(metrics.record_count, 1);
+
+        // 2. RetryingWriter::new with default options succeeding immediately
+        let mem = MemoryWriter::new();
+        let mut rw_default = RetryingWriter::new(mem.clone());
+        rw_default.write(record! { "ok" => true }).await.unwrap();
+        rw_default.close().await.unwrap();
+        assert_eq!(mem.get_records().len(), 1);
+
+        // 3. RetryingWriter exhausting retries, opening Circuit Breaker, then resetting after timeout
+        struct AlwaysFailUntilResetWriter {
+            should_fail: Arc<Mutex<bool>>,
+            written: Arc<Mutex<usize>>,
+        }
+
+        #[async_trait]
+        impl DataWriter for AlwaysFailUntilResetWriter {
+            async fn write(&mut self, _record: DataRecord) -> Result<()> {
+                if *self.should_fail.lock().unwrap() {
+                    return Err(DataGenieError::Other("downstream outage".to_string()));
+                }
+                *self.written.lock().unwrap() += 1;
+                Ok(())
+            }
+
+            async fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let should_fail = Arc::new(Mutex::new(true));
+        let written = Arc::new(Mutex::new(0usize));
+
+        let mut rw = RetryingWriter::with_options(
+            AlwaysFailUntilResetWriter {
+                should_fail: Arc::clone(&should_fail),
+                written: Arc::clone(&written),
+            },
+            RetryOptions {
+                max_retries: 1,
+                initial_delay_ms: 1,
+                backoff_factor: 1,
+                circuit_breaker_threshold: 2,
+                circuit_reset_timeout_ms: 25,
+            },
+        );
+
+        // First failure (consecutive_failures = 1)
+        let err1 = rw.write(record! { "id" => 1 }).await.unwrap_err();
+        assert!(err1.to_string().contains("Failed to write record after 1 retries"));
+
+        // Second failure reaches threshold=2 and opens the circuit breaker
+        let err2 = rw.write(record! { "id" => 2 }).await.unwrap_err();
+        assert!(err2.to_string().contains("Failed to write record after 1 retries"));
+
+        // Immediate third call hits OPEN circuit breaker fast-fail
+        let err3 = rw.write(record! { "id" => 3 }).await.unwrap_err();
+        assert!(matches!(err3, DataGenieError::CircuitBreaker(_)));
+
+        // Wait for circuit_reset_timeout_ms to elapse, then heal downstream
+        tokio::time::sleep(std::time::Duration::from_millis(35)).await;
+        *should_fail.lock().unwrap() = false;
+
+        // Circuit resets and write succeeds
+        rw.write(record! { "id" => 4 }).await.unwrap();
+        rw.close().await.unwrap();
+        assert_eq!(*written.lock().unwrap(), 1);
+    });
+}
+
+#[test]
+fn test_tsv_reader_options_schema_and_dlq() {
+    block_on(async {
+        // 1. TSVReader::with_options + headerless mode (has_field_names_in_first_row = false)
+        let raw_no_header = "10\tAlice\n20\tBob\n";
+        let reader_no_header = TSVReader::with_options(
+            MemorySource::new(raw_no_header),
+            TSVReaderOptions {
+                schema: None,
+                has_field_names_in_first_row: Some(false),
+            },
+        );
+        let out_no_header = MemoryWriter::new();
+        Job::run(reader_no_header, out_no_header.clone()).await.unwrap();
+        let rows = out_no_header.get_records();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("0"), Some(&json!("10")));
+        assert_eq!(rows[0].get("1"), Some(&json!("Alice")));
+
+        // 2. TSVReader with set_field_names_in_first_row, with_schema, set_dlq, and set_ignore_errors
+        let schema = RecordSchema::new()
+            .field("id", FieldSchema::integer().coerce())
+            .field("name", FieldSchema::string().min_length(2));
+
+        let raw_tsv = "id\tname\n1\tValidName\nnot_an_int\tX\n2\tOk\n";
+        let dlq = MemoryWriter::new();
+        let mut reader = TSVReader::new(MemorySource::new(raw_tsv))
+            .set_field_names_in_first_row(true)
+            .with_schema(schema);
+        reader.set_dlq(SharedWriter::new(dlq.clone()));
+        reader.set_ignore_errors(true);
+
+        let out_valid = MemoryWriter::new();
+        Job::run(reader, out_valid.clone()).await.unwrap();
+        dlq.clone().close().await.unwrap();
+
+        let valid_rows = out_valid.get_records();
+        assert_eq!(valid_rows.len(), 2);
+        assert_eq!(valid_rows[0].get("id"), Some(&json!(1)));
+        assert_eq!(dlq.get_records().len(), 1);
+    });
+}
+
+#[test]
+fn test_schema_validating_reader_comprehensive() {
+    block_on(async {
+        let schema = RecordSchema::new()
+            .strict()
+            .field("id", FieldSchema::integer().coerce().min(1.0).max(1000.0))
+            .field("score", FieldSchema::number().coerce().min(0.0).max(100.0))
+            .field("active", FieldSchema::boolean().coerce())
+            .field(
+                "username",
+                FieldSchema::string()
+                    .coerce()
+                    .min_length(3)
+                    .refine(|v| v.as_str().map(|s| !s.contains(' ')).unwrap_or(false), "cannot contain spaces"),
+            )
+            .field("nickname", FieldSchema::string().optional().nullable())
+            .field("meta", FieldSchema::any());
+
+        // Test direct RecordSchema::parse edge cases
+        // Valid record with coercions and extra field stripped by .strict()
+        let ok_rec = schema
+            .parse(record! {
+                "id" => "42",
+                "score" => "95.5",
+                "active" => "yes",
+                "username" => 12345, // coerced to "12345"
+                "nickname" => Value::Null,
+                "meta" => json!({"k": 1}),
+                "extra_unwanted" => "removed_by_strict"
+            })
+            .unwrap();
+        assert_eq!(ok_rec.get("id"), Some(&json!(42)));
+        assert_eq!(ok_rec.get("score"), Some(&json!(95.5)));
+        assert_eq!(ok_rec.get("active"), Some(&json!(true)));
+        assert_eq!(ok_rec.get("username"), Some(&json!("12345")));
+        assert_eq!(ok_rec.get("nickname"), Some(&Value::Null));
+        assert!(!ok_rec.contains_key("extra_unwanted"));
+
+        // Boolean false coercions ("false", "0", "no") and native Bool
+        for f_val in [json!(false), json!("false"), json!("0"), json!("no")] {
+            let r = schema
+                .parse(record! {
+                    "id" => 1,
+                    "score" => 10.0,
+                    "active" => f_val,
+                    "username" => "alice"
+                })
+                .unwrap();
+            assert_eq!(r.get("active"), Some(&json!(false)));
+        }
+
+        // Failure cases covering every branch in FieldSchema::validate_value
+        // 1. Missing required field
+        assert!(schema.parse(record! { "score" => 10, "active" => true, "username" => "abc" }).is_err());
+        // 2. Null on non-nullable required field
+        assert!(
+            schema
+                .parse(record! { "id" => Value::Null, "score" => 10, "active" => true, "username" => "abc" })
+                .is_err()
+        );
+        // 3. Invalid integer coercion & non-coerced type mismatch
+        assert!(
+            schema
+                .parse(record! { "id" => "abc", "score" => 10, "active" => true, "username" => "abc" })
+                .is_err()
+        );
+        assert!(FieldSchema::integer().validate_or_err("id", json!("12")).is_err());
+        assert!(FieldSchema::number().validate_or_err("score", json!("12.3")).is_err());
+        assert!(FieldSchema::boolean().validate_or_err("active", json!("true")).is_err());
+        assert!(FieldSchema::string().validate_or_err("name", json!(123)).is_err());
+        // 4. Invalid number & boolean coercions
+        assert!(
+            schema
+                .parse(record! { "id" => 1, "score" => "not_num", "active" => true, "username" => "abc" })
+                .is_err()
+        );
+        assert!(
+            schema
+                .parse(record! { "id" => 1, "score" => 10, "active" => "maybe", "username" => "abc" })
+                .is_err()
+        );
+        // 5. Below min / above max
+        assert!(
+            schema
+                .parse(record! { "id" => 0, "score" => 10, "active" => true, "username" => "abc" })
+                .is_err()
+        );
+        assert!(
+            schema
+                .parse(record! { "id" => 1, "score" => 150.0, "active" => true, "username" => "abc" })
+                .is_err()
+        );
+        // 6. Below min_length & custom refine failure
+        assert!(
+            schema
+                .parse(record! { "id" => 1, "score" => 10, "active" => true, "username" => "ab" })
+                .is_err()
+        );
+        assert!(
+            schema
+                .parse(record! { "id" => 1, "score" => 10, "active" => true, "username" => "bad name" })
+                .is_err()
+        );
+
+        // Test SchemaValidatingReader::from_arc without DLQ (skips invalid records) and with set_dlq / set_ignore_errors
+        let input_records = vec![
+            record! { "id" => "10", "score" => "80", "active" => "true", "username" => "valid_user" },
+            record! { "id" => "bad", "score" => "80", "active" => "true", "username" => "invalid_user" },
+        ];
+        let arc_schema: Arc<dyn SchemaValidator> = Arc::new(schema.clone());
+        let reader_no_dlq = SchemaValidatingReader::from_arc(MemoryReader::new(input_records.clone()), Arc::clone(&arc_schema));
+        let out_no_dlq = MemoryWriter::new();
+        Job::run(reader_no_dlq, out_no_dlq.clone()).await.unwrap();
+        assert_eq!(out_no_dlq.get_records().len(), 1);
+
+        // With set_dlq and set_ignore_errors + closure SchemaValidator
+        let dlq = MemoryWriter::new();
+        let mut closure_validator = SchemaValidatingReader::new(MemoryReader::new(input_records), |rec: DataRecord| {
+            if rec.get("id") == Some(&json!("bad")) {
+                Err(DataGenieError::Validation("bad id".to_string()))
+            } else {
+                Ok(rec)
+            }
+        });
+        closure_validator.set_dlq(SharedWriter::new(dlq.clone()));
+        closure_validator.set_ignore_errors(true);
+
+        let out_with_dlq = MemoryWriter::new();
+        Job::run(closure_validator, out_with_dlq.clone()).await.unwrap();
+        assert_eq!(out_with_dlq.get_records().len(), 1);
+        assert_eq!(dlq.get_records().len(), 1);
+        assert!(dlq.get_records()[0].contains_key("_schema_error"));
+    });
+}
+
+trait FieldSchemaTestExt {
+    fn validate_or_err(self, name: &str, v: Value) -> Result<DataRecord>;
+}
+
+impl FieldSchemaTestExt for FieldSchema {
+    fn validate_or_err(self, name: &str, v: Value) -> Result<DataRecord> {
+        let mut r = DataRecord::new();
+        r.insert(name.to_string(), v);
+        RecordSchema::new().field(name, self).parse(r)
+    }
 }

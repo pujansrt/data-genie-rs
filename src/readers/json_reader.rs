@@ -1,10 +1,10 @@
 use async_stream::try_stream;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::core::error::DataGenieError;
-use crate::core::interfaces::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
-use crate::core::transport_utils::{ensure_data_source, SourceInput};
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 use crate::transformers::SchemaValidator;
 
 #[derive(Clone, Default)]

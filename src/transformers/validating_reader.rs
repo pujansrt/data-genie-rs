@@ -1,11 +1,11 @@
 use async_stream::try_stream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
 use crate::core::error::DataGenieError;
-use crate::core::interfaces::{DataReader, DataRecord, RecordStream, SharedWriter};
+use crate::core::traits::{DataReader, DataRecord, RecordStream, SharedWriter};
 
 /// Validation message recorded when a record fails a validation rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,8 +15,7 @@ pub struct ValidationMessage {
     pub message: String,
 }
 
-pub type RecordValidationRule =
-    Arc<dyn Fn(&DataRecord, &mut Vec<ValidationMessage>) -> bool + Send + Sync>;
+pub type RecordValidationRule = Arc<dyn Fn(&DataRecord, &mut Vec<ValidationMessage>) -> bool + Send + Sync>;
 
 /// Validates streaming records against one or more `RecordValidationRule`s,
 /// optionally throwing an error or diverting invalid/poison records to a Dead Letter Queue (DLQ).
@@ -181,37 +180,33 @@ impl FieldValidator {
     {
         let field = self.field_name.clone();
         let msg = error_message.into();
-        self.rules.push(Arc::new(
-            move |val: &Value, messages: &mut Vec<ValidationMessage>| {
-                if !rule(val) {
-                    messages.push(ValidationMessage {
-                        record: DataRecord::new(),
-                        field: Some(field.clone()),
-                        message: msg.clone(),
-                    });
-                    false
-                } else {
-                    true
-                }
-            },
-        ));
+        self.rules.push(Arc::new(move |val: &Value, messages: &mut Vec<ValidationMessage>| {
+            if !rule(val) {
+                messages.push(ValidationMessage {
+                    record: DataRecord::new(),
+                    field: Some(field.clone()),
+                    message: msg.clone(),
+                });
+                false
+            } else {
+                true
+            }
+        }));
         self
     }
 
     pub fn create_record_validation_rule(&self) -> RecordValidationRule {
         let field_name = self.field_name.clone();
         let rules = self.rules.clone();
-        Arc::new(
-            move |record: &DataRecord, messages: &mut Vec<ValidationMessage>| {
-                let val = record.get(&field_name).unwrap_or(&Value::Null);
-                let mut is_valid = true;
-                for rule in &rules {
-                    if !rule(val, messages) {
-                        is_valid = false;
-                    }
+        Arc::new(move |record: &DataRecord, messages: &mut Vec<ValidationMessage>| {
+            let val = record.get(&field_name).unwrap_or(&Value::Null);
+            let mut is_valid = true;
+            for rule in &rules {
+                if !rule(val, messages) {
+                    is_valid = false;
                 }
-                is_valid
-            },
-        )
+            }
+            is_valid
+        })
     }
 }

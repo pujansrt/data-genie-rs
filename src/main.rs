@@ -1,7 +1,4 @@
-use data_genie::{
-    block_on, CSVReader, InferSchemaOptions, Job, JsonReader, NDJsonReader, PipelineParser,
-    TSVReader,
-};
+use data_genie::{CSVReader, InferSchemaOptions, Job, JsonReader, NDJsonReader, PipelineParser, TSVReader, block_on};
 use std::env;
 use std::path::PathBuf;
 
@@ -70,17 +67,11 @@ async fn async_main() {
                 }
             }
 
-            let ext = file_path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("csv")
-                .to_lowercase();
+            let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("csv").to_lowercase();
 
             let res = match ext.as_str() {
                 "json" => Job::preview(JsonReader::new(&file_path), Some(limit), None).await,
-                "ndjson" | "jsonl" => {
-                    Job::preview(NDJsonReader::new(&file_path), Some(limit), None).await
-                }
+                "ndjson" | "jsonl" => Job::preview(NDJsonReader::new(&file_path), Some(limit), None).await,
                 "tsv" => Job::preview(TSVReader::new(&file_path), Some(limit), None).await,
                 _ => Job::preview(CSVReader::new(&file_path), Some(limit), None).await,
             };
@@ -98,20 +89,14 @@ async fn async_main() {
             let file_path = PathBuf::from(file_str);
             let mut sample_size = 1000usize;
             for i in 2..args.len() {
-                if (args[i] == "--sample" || args[i] == "--sample-size" || args[i] == "-s")
-                    && i + 1 < args.len()
-                {
+                if (args[i] == "--sample" || args[i] == "--sample-size" || args[i] == "-s") && i + 1 < args.len() {
                     if let Ok(n) = args[i + 1].parse::<usize>() {
                         sample_size = n;
                     }
                 }
             }
 
-            let ext = file_path
-                .extension()
-                .and_then(|s| s.to_str())
-                .unwrap_or("csv")
-                .to_lowercase();
+            let ext = file_path.extension().and_then(|s| s.to_str()).unwrap_or("csv").to_lowercase();
 
             let opts = InferSchemaOptions {
                 sample_size: Some(sample_size),

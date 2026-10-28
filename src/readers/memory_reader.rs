@@ -1,7 +1,7 @@
 use async_stream::try_stream;
 use std::sync::Arc;
 
-use crate::core::interfaces::{DataReader, DataRecord, RecordStream};
+use crate::core::traits::{DataReader, DataRecord, RecordStream};
 use crate::transformers::SchemaValidator;
 
 /// Streams records from an in-memory `Vec<DataRecord>`.
@@ -12,10 +12,7 @@ pub struct MemoryReader {
 
 impl MemoryReader {
     pub fn new(records: Vec<DataRecord>) -> Self {
-        Self {
-            records,
-            schema: None,
-        }
+        Self { records, schema: None }
     }
 
     pub fn with_schema<V: SchemaValidator + 'static>(mut self, schema: V) -> Self {

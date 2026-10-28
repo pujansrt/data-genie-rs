@@ -2,12 +2,12 @@ use async_stream::try_stream;
 use bytes::Bytes;
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::{Field, Row};
-use serde_json::{json, Map, Number, Value};
+use serde_json::{Map, Number, Value, json};
 use std::fs::File;
 use std::sync::Arc;
 
-use crate::core::interfaces::{DataReader, DataRecord, DataSource, RecordStream};
-use crate::core::transport_utils::{ensure_data_source, SourceInput};
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 use crate::transformers::SchemaValidator;
 
 /// Streaming columnar Parquet file reader built on the official Apache `parquet` crate.
@@ -49,15 +49,9 @@ impl ParquetReader {
             Field::UShort(s) => json!(*s),
             Field::UInt(i) => json!(*i),
             Field::ULong(l) => json!(*l),
-            Field::Float16(f) => Number::from_f64(f64::from(*f))
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-            Field::Float(f) => Number::from_f64(*f as f64)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
-            Field::Double(d) => Number::from_f64(*d)
-                .map(Value::Number)
-                .unwrap_or(Value::Null),
+            Field::Float16(f) => Number::from_f64(f64::from(*f)).map(Value::Number).unwrap_or(Value::Null),
+            Field::Float(f) => Number::from_f64(*f as f64).map(Value::Number).unwrap_or(Value::Null),
+            Field::Double(d) => Number::from_f64(*d).map(Value::Number).unwrap_or(Value::Null),
             Field::Str(s) => Value::String(s.clone()),
             Field::Bytes(b) => Value::String(String::from_utf8_lossy(b.data()).to_string()),
             Field::Date(days) => json!(*days),

@@ -1,11 +1,9 @@
 use async_stream::try_stream;
 use futures::StreamExt;
 use indexmap::IndexMap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::core::interfaces::{
-    value_to_f64, value_to_string, DataReader, DataRecord, RecordStream, SharedWriter,
-};
+use crate::core::traits::{DataReader, DataRecord, RecordStream, SharedWriter, value_to_f64, value_to_string};
 
 #[derive(Debug, Clone)]
 enum AggregationType {

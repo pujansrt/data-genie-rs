@@ -1,4 +1,4 @@
-use data_genie::{block_on, CSVReader, Job, JobOptions, JsonWriter, SharedWriter};
+use data_genie::{CSVReader, Job, JobOptions, JsonWriter, SharedWriter, block_on};
 use std::io::{self, Write};
 use std::time::Instant;
 
@@ -14,10 +14,7 @@ fn run_blocking_example() -> data_genie::Result<()> {
     let mut job = Job::with_options(reader, writer, JobOptions::new().with_progress(false));
 
     job.on_progress(|m| {
-        print!(
-            "\r⏳ Processed: {} | {:.0} rec/sec",
-            m.record_count, m.records_per_second
-        );
+        print!("\r⏳ Processed: {} | {:.0} rec/sec", m.record_count, m.records_per_second);
         let _ = io::stdout().flush();
     });
 
@@ -48,10 +45,7 @@ async fn run_async_example() -> data_genie::Result<()> {
     let mut job = Job::with_options(reader, writer, JobOptions::new().with_progress(false));
 
     job.on_progress(|m| {
-        print!(
-            "\r⏳ Processed: {} | {:.0} rec/sec",
-            m.record_count, m.records_per_second
-        );
+        print!("\r⏳ Processed: {} | {:.0} rec/sec", m.record_count, m.records_per_second);
         let _ = io::stdout().flush();
     });
 

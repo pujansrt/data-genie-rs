@@ -4,8 +4,8 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use crate::core::error::Result;
-use crate::core::interfaces::{value_to_string, DataRecord, DataSink, DataWriter};
-use crate::core::transport_utils::{ensure_data_sink, SinkInput};
+use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 #[derive(Debug, Clone)]
 pub struct XlsxWriterOptions {

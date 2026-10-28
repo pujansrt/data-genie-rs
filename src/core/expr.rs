@@ -1,7 +1,7 @@
 use serde_json::{Number, Value};
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{value_to_f64, value_to_string, DataRecord};
+use crate::core::traits::{DataRecord, value_to_f64, value_to_string};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -190,9 +190,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
                     i += 1;
                 }
                 if !closed {
-                    return Err(DataGenieError::Parse(
-                        "Unterminated string literal".to_string(),
-                    ));
+                    return Err(DataGenieError::Parse("Unterminated string literal".to_string()));
                 }
                 tokens.push(Token::Str(s));
             }
@@ -202,19 +200,14 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
                     i += 1;
                 }
                 let num_str: String = chars[start..i].iter().collect();
-                let n = num_str.parse::<f64>().map_err(|e| {
-                    DataGenieError::Parse(format!("Invalid number '{}': {}", num_str, e))
-                })?;
+                let n = num_str
+                    .parse::<f64>()
+                    .map_err(|e| DataGenieError::Parse(format!("Invalid number '{}': {}", num_str, e)))?;
                 tokens.push(Token::Num(n));
             }
             _ if c.is_ascii_alphabetic() || c == '_' || c == '$' => {
                 let start = i;
-                while i < chars.len()
-                    && (chars[i].is_ascii_alphanumeric()
-                        || chars[i] == '_'
-                        || chars[i] == '.'
-                        || chars[i] == '$')
-                {
+                while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '.' || chars[i] == '$') {
                     i += 1;
                 }
                 let ident: String = chars[start..i].iter().collect();
@@ -232,10 +225,7 @@ fn tokenize(input: &str) -> Result<Vec<Token>> {
                 }
             }
             _ => {
-                return Err(DataGenieError::Parse(format!(
-                    "Unexpected character '{}' in expression",
-                    c
-                )));
+                return Err(DataGenieError::Parse(format!("Unexpected character '{}' in expression", c)));
             }
         }
     }
@@ -277,9 +267,7 @@ impl Parser {
             self.next();
             let then_branch = self.parse_ternary()?;
             if !matches!(self.next(), Some(Token::Colon)) {
-                return Err(DataGenieError::Parse(
-                    "Expected ':' in ternary expression".to_string(),
-                ));
+                return Err(DataGenieError::Parse("Expected ':' in ternary expression".to_string()));
             }
             let else_branch = self.parse_ternary()?;
             Ok(Expr::Ternary {
@@ -431,10 +419,7 @@ impl Parser {
                 }
                 Ok(expr)
             }
-            other => Err(DataGenieError::Parse(format!(
-                "Unexpected token in expression: {:?}",
-                other
-            ))),
+            other => Err(DataGenieError::Parse(format!("Unexpected token in expression: {:?}", other))),
         }
     }
 }
@@ -443,9 +428,7 @@ fn f64_to_json_value(n: f64) -> Value {
     if n.fract() == 0.0 && n >= (i64::MIN as f64) && n <= (i64::MAX as f64) {
         Value::Number(Number::from(n as i64))
     } else {
-        Number::from_f64(n)
-            .map(Value::Number)
-            .unwrap_or(Value::Null)
+        Number::from_f64(n).map(Value::Number).unwrap_or(Value::Null)
     }
 }
 
@@ -471,9 +454,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
                 false
             }
         }
-        (Value::Bool(ba), Value::String(sb)) | (Value::String(sb), Value::Bool(ba)) => {
-            (sb == "true" && *ba) || (sb == "false" && !*ba)
-        }
+        (Value::Bool(ba), Value::String(sb)) | (Value::String(sb), Value::Bool(ba)) => (sb == "true" && *ba) || (sb == "false" && !*ba),
         _ => false,
     }
 }
@@ -537,9 +518,7 @@ impl Expr {
             }
             Expr::UnaryNeg(inner) => {
                 let v = inner.eval(record)?;
-                let n = value_to_f64(&v).ok_or_else(|| {
-                    DataGenieError::Parse(format!("Cannot negate non-numeric value: {:?}", v))
-                })?;
+                let n = value_to_f64(&v).ok_or_else(|| DataGenieError::Parse(format!("Cannot negate non-numeric value: {:?}", v)))?;
                 Ok(f64_to_json_value(-n))
             }
             Expr::Ternary {
@@ -548,11 +527,7 @@ impl Expr {
                 else_branch,
             } => {
                 let c = cond.eval(record)?;
-                if is_truthy(&c) {
-                    then_branch.eval(record)
-                } else {
-                    else_branch.eval(record)
-                }
+                if is_truthy(&c) { then_branch.eval(record) } else { else_branch.eval(record) }
             }
             Expr::Binary { op, left, right } => match op {
                 BinOp::And => {
@@ -589,15 +564,9 @@ impl Expr {
                     let ord = compare_values(&l, &r);
                     let res = match (op, ord) {
                         (BinOp::Lt, Some(std::cmp::Ordering::Less)) => true,
-                        (
-                            BinOp::Lte,
-                            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal),
-                        ) => true,
+                        (BinOp::Lte, Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)) => true,
                         (BinOp::Gt, Some(std::cmp::Ordering::Greater)) => true,
-                        (
-                            BinOp::Gte,
-                            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal),
-                        ) => true,
+                        (BinOp::Gte, Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)) => true,
                         _ => false,
                     };
                     Ok(Value::Bool(res))
@@ -613,30 +582,18 @@ impl Expr {
                     } else if matches!(l, Value::String(_)) || matches!(r, Value::String(_)) {
                         // However, if both strings look strictly numeric and neither is a literal string?
                         // In JS, string + anything is string concatenation.
-                        Ok(Value::String(format!(
-                            "{}{}",
-                            value_to_string(&l),
-                            value_to_string(&r)
-                        )))
+                        Ok(Value::String(format!("{}{}", value_to_string(&l), value_to_string(&r))))
                     } else if let (Some(na), Some(nb)) = (value_to_f64(&l), value_to_f64(&r)) {
                         Ok(f64_to_json_value(na + nb))
                     } else {
-                        Ok(Value::String(format!(
-                            "{}{}",
-                            value_to_string(&l),
-                            value_to_string(&r)
-                        )))
+                        Ok(Value::String(format!("{}{}", value_to_string(&l), value_to_string(&r))))
                     }
                 }
                 BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
                     let l = left.eval(record)?;
                     let r = right.eval(record)?;
-                    let na = value_to_f64(&l).ok_or_else(|| {
-                        DataGenieError::Parse(format!("Left operand is not numeric: {:?}", l))
-                    })?;
-                    let nb = value_to_f64(&r).ok_or_else(|| {
-                        DataGenieError::Parse(format!("Right operand is not numeric: {:?}", r))
-                    })?;
+                    let na = value_to_f64(&l).ok_or_else(|| DataGenieError::Parse(format!("Left operand is not numeric: {:?}", l)))?;
+                    let nb = value_to_f64(&r).ok_or_else(|| DataGenieError::Parse(format!("Right operand is not numeric: {:?}", r)))?;
                     let res = match op {
                         BinOp::Sub => na - nb,
                         BinOp::Mul => na * nb,

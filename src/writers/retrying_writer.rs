@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::interfaces::{DataRecord, DataWriter};
+use crate::core::traits::{DataRecord, DataWriter};
 
 /// Configuration for `RetryingWriter` exponential backoff and circuit breaker.
 #[derive(Debug, Clone)]
@@ -70,8 +70,7 @@ impl<W: DataWriter> RetryingWriter<W> {
     fn on_failure(&mut self) {
         self.consecutive_failures += 1;
         if self.consecutive_failures >= self.options.circuit_breaker_threshold {
-            self.circuit_open_until =
-                Some(Instant::now() + Duration::from_millis(self.options.circuit_reset_timeout_ms));
+            self.circuit_open_until = Some(Instant::now() + Duration::from_millis(self.options.circuit_reset_timeout_ms));
         }
     }
 }

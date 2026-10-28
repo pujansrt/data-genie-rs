@@ -4,10 +4,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::core::error::Result;
-use crate::core::interfaces::{DataRecord, DataWriter};
+use crate::core::traits::{DataRecord, DataWriter};
 
-type AsyncCallback =
-    Arc<dyn Fn(DataRecord) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
+type AsyncCallback = Arc<dyn Fn(DataRecord) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
 
 /// Executes a custom closure or async callback for each `DataRecord` emitted by a pipeline.
 pub struct CallbackWriter {
