@@ -106,12 +106,12 @@ data-genie = { version = "0.1.3", features = ["parquet", "xlsx", "s3", "http"] }
 # Install once
 cargo install data-genie
 
-# Run a declarative YAML pipeline
-data-genie -- run tests/declarative-pipeline.yaml
+# Run a declarative YAML pipeline (see https://pujansrt.github.io/data-genie-rs/guide/declarative-pipelines.html#interactive-pipeline-builder)
+data-genie run pipeline.yaml
 
 # Preview first 5 records of a file
-data-genie -- preview examples/input/users.csv --limit 5
+data-genie preview users.csv
 
 # Infer Rust, TypeScript, Zod, and SQL schemas from a dataset
-data-genie -- infer-schema examples/input/users.csv
+data-genie infer-schema users.csv
 ```
