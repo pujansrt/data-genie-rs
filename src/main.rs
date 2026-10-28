@@ -21,6 +21,8 @@ Commands:
 
 Example:
   data-genie run my-pipeline.yaml
+
+See pipeline builder for full blown example: https://pujansrt.github.io/data-genie-rs/guide/declarative-pipelines.html  
 "#
     );
 }

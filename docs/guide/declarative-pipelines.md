@@ -7,8 +7,12 @@ Declarative pipelines let you define ETL jobs in a YAML configuration file and e
 ```yaml
 # pipeline.yaml
 pipeline:
-  read: { type: csv, path: examples/input/users.csv }
-  write: { type: json, path: examples/output/users.json }
+  read:
+    type: csv
+    path: input/example.csv
+  write:
+    type: json
+    path: output/users.json
 ```
 
 Run it via Cargo or the installed binary:
