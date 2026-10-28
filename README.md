@@ -90,32 +90,28 @@ fn main() -> data_genie::Result<()> {
 
 ### 4. Optional Cargo Features
 
-By default, `data-genie` compiles with a minimal dependency footprint (`csv`, `serde_json`, `quick-xml`, `serde_yaml`, `regex`, `sha2`). Enable heavy format or cloud connectors only when needed:
+By default, `data-genie` compiles with a minimal dependency footprint. Enable heavy format or cloud connectors only when needed:
 
 ```toml
 [dependencies]
-data-genie = { version = "0.1.2", features = ["parquet", "xlsx", "s3", "http"] }
-# Or enable everything:
-# data-genie = { version = "0.1.2", features = ["full"] }
+data-genie = { version = "0.1.3", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
+
+# OR enable everything:
+# data-genie = { version = "0.1.3", features = ["full"] }
 ```
 
 ### 5. CLI Usage
 
 ```bash
+# Install once
+cargo install data-genie
+
 # Run a declarative YAML pipeline
-cargo run --bin data-genie -- run tests/declarative-pipeline.yaml
+data-genie -- run tests/declarative-pipeline.yaml
 
 # Preview first 5 records of a file
-cargo run --bin data-genie -- preview examples/input/users.csv --limit 5
+data-genie -- preview examples/input/users.csv --limit 5
 
 # Infer Rust, TypeScript, Zod, and SQL schemas from a dataset
-cargo run --bin data-genie -- infer-schema examples/input/users.csv
-```
-
----
-
-## Running Tests
-
-```bash
-cargo test
+data-genie -- infer-schema examples/input/users.csv
 ```
