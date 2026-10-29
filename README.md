@@ -15,6 +15,15 @@
 
 ## Quick Start
 
+This crate uses **Rust edition 2024**. See the [standalone examples](examples/README.md)
+for small, complete programs with embedded data and individual run commands.
+
+```shell
+cargo run --example csv_to_json
+cargo run --example filter_transform
+cargo run --example validation_dlq
+```
+
 ### 1. Synchronous Execution
 Call `Job::run_blocking(reader, writer)` directly without `#[tokio::main]`
 
@@ -94,10 +103,10 @@ By default, `data-genie` compiles with a minimal dependency footprint. Enable he
 
 ```toml
 [dependencies]
-data-genie = { version = "0.1.3", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
+data-genie = { version = "0.1.4", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
 
 # OR enable everything:
-# data-genie = { version = "0.1.3", features = ["full"] }
+# data-genie = { version = "0.1.4", features = ["full"] }
 ```
 
 ### 5. CLI Usage

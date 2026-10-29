@@ -176,7 +176,7 @@ impl SQLWriter {
         let mut values = Vec::new();
         let mut param_index = 1usize;
 
-        let sql = if let (Some(ref conflict_key), 1) = (&self.conflict_key, self.buffer.len()) {
+        let sql = if let (Some(conflict_key), 1) = (&self.conflict_key, self.buffer.len()) {
             let record = &self.buffer[0];
             let updates = self
                 .field_names
