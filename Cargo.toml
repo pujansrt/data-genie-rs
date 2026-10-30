@@ -33,10 +33,6 @@ path = "examples/example.rs"
 name = "stress-test"
 path = "tests/stress-test.rs"
 
-[[example]]
-name = "coverage-report"
-path = "examples/coverage_report.rs"
-
 [features]
 default = []
 full = ["parquet", "xlsx", "s3", "http"]

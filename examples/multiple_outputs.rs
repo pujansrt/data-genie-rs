@@ -1,4 +1,3 @@
-//! Run: cargo run --example multiple_outputs
 use data_genie::{CSVWriter, Job, JsonWriter, MemoryReader, MemorySink, MultiWriter, record};
 
 fn main() -> data_genie::Result<()> {

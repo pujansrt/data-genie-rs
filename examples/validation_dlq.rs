@@ -1,4 +1,3 @@
-//! Run: cargo run --example validation_dlq
 use data_genie::{FieldValidator, Job, JsonWriter, MemoryReader, MemorySink, ValidatingReader, record};
 
 fn main() -> data_genie::Result<()> {
