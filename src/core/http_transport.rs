@@ -1,16 +1,21 @@
 use async_trait::async_trait;
 use futures::TryStreamExt;
-use reqwest::{Client, Method};
+use reqwest::{Client, Method, Response};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::AsyncBufRead;
 use tokio_util::io::StreamReader;
 
 use crate::core::error::{DataGenieError, Result};
 use crate::core::memory_transport::SharedVecWriter;
-use crate::core::traits::{DataSink, DataSource};
+use crate::core::traits::{BufferedByteReader, ByteReader, ByteWriter, DataSink, DataSource};
+
+fn parse_method(method: Option<&str>, default: &str) -> Result<Method> {
+    let method_str = method.unwrap_or(default);
+    Method::from_bytes(method_str.as_bytes()).map_err(|e| DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e)))
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct HttpSourceOptions {
@@ -19,7 +24,24 @@ pub struct HttpSourceOptions {
     pub body: Option<Value>,
 }
 
-/// HTTP `DataSource` that streams response bytes over HTTP/HTTPS.
+impl HttpSourceOptions {
+    pub fn with_method(mut self, method: impl Into<String>) -> Self {
+        self.method = Some(method.into());
+        self
+    }
+
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_body(mut self, body: Value) -> Self {
+        self.body = Some(body);
+        self
+    }
+}
+
+/// HTTP [`DataSource`] that streams response bytes over HTTP/HTTPS.
 #[derive(Debug, Clone)]
 pub struct HttpSource {
     url: String,
@@ -29,11 +51,7 @@ pub struct HttpSource {
 
 impl HttpSource {
     pub fn new<S: Into<String>>(url: S) -> Self {
-        Self {
-            url: url.into(),
-            options: HttpSourceOptions::default(),
-            client: Client::new(),
-        }
+        Self::with_options(url, HttpSourceOptions::default())
     }
 
     pub fn with_options<S: Into<String>>(url: S, options: HttpSourceOptions) -> Self {
@@ -43,13 +61,9 @@ impl HttpSource {
             client: Client::new(),
         }
     }
-}
 
-#[async_trait]
-impl DataSource for HttpSource {
-    async fn get_reader(&self) -> Result<Pin<Box<dyn AsyncRead + Send + Unpin>>> {
-        let method_str = self.options.method.as_deref().unwrap_or("GET");
-        let method = Method::from_bytes(method_str.as_bytes()).map_err(|e| DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e)))?;
+    async fn send_request(&self) -> Result<Response> {
+        let method = parse_method(self.options.method.as_deref(), "GET")?;
 
         let mut req = self.client.request(method, &self.url);
         for (k, v) in &self.options.headers {
@@ -65,13 +79,33 @@ impl DataSource for HttpSource {
             return Err(DataGenieError::Http(format!("HttpSource: {} returned {}", self.url, status)));
         }
 
-        let byte_stream = response.bytes_stream().map_err(std::io::Error::other);
-        let reader = StreamReader::new(byte_stream);
-        Ok(Box::pin(reader))
+        Ok(response)
     }
 
-    fn name(&self) -> &str {
-        &self.url
+    async fn open_stream_reader(&self) -> Result<impl AsyncBufRead + Send + Unpin + use<>> {
+        let response = self.send_request().await?;
+        let byte_stream = response.bytes_stream().map_err(std::io::Error::other);
+        Ok(StreamReader::new(byte_stream))
+    }
+}
+
+#[async_trait]
+impl DataSource for HttpSource {
+    async fn get_reader(&self) -> Result<ByteReader> {
+        Ok(Box::pin(self.open_stream_reader().await?))
+    }
+
+    async fn get_buf_reader(&self) -> Result<BufferedByteReader> {
+        Ok(Box::pin(self.open_stream_reader().await?))
+    }
+
+    async fn read_bytes(&self) -> Result<Vec<u8>> {
+        let response = self.send_request().await?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
+    fn name(&self) -> Cow<'_, str> {
+        Cow::Borrowed(&self.url)
     }
 }
 
@@ -81,7 +115,19 @@ pub struct HttpSinkOptions {
     pub headers: HashMap<String, String>,
 }
 
-/// HTTP `DataSink` that streams or uploads written data to an HTTP endpoint upon `finalize()`.
+impl HttpSinkOptions {
+    pub fn with_method(mut self, method: impl Into<String>) -> Self {
+        self.method = Some(method.into());
+        self
+    }
+
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
+        self
+    }
+}
+
+/// HTTP [`DataSink`] that uploads written data to an HTTP endpoint upon [`finalize`](DataSink::finalize).
 #[derive(Debug, Clone)]
 pub struct HttpSink {
     url: String,
@@ -92,12 +138,7 @@ pub struct HttpSink {
 
 impl HttpSink {
     pub fn new<S: Into<String>>(url: S) -> Self {
-        Self {
-            url: url.into(),
-            options: HttpSinkOptions::default(),
-            buffer: Arc::new(Mutex::new(Vec::new())),
-            client: Client::new(),
-        }
+        Self::with_options(url, HttpSinkOptions::default())
     }
 
     pub fn with_options<S: Into<String>>(url: S, options: HttpSinkOptions) -> Self {
@@ -112,23 +153,19 @@ impl HttpSink {
 
 #[async_trait]
 impl DataSink for HttpSink {
-    async fn get_writer(&self) -> Result<Pin<Box<dyn AsyncWrite + Send + Unpin>>> {
-        Ok(Box::pin(SharedVecWriter {
-            buffer: Arc::clone(&self.buffer),
-        }))
+    async fn get_writer(&self) -> Result<ByteWriter> {
+        Ok(Box::pin(SharedVecWriter::new(Arc::clone(&self.buffer))))
     }
 
     async fn finalize(&mut self) -> Result<()> {
         let payload = {
-            let guard = self.buffer.lock().unwrap();
-            guard.clone()
+            let mut guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *guard)
         };
 
-        let method_str = self.options.method.as_deref().unwrap_or("POST");
-        let method = Method::from_bytes(method_str.as_bytes()).map_err(|e| DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e)))?;
+        let method = parse_method(self.options.method.as_deref(), "POST")?;
 
         let mut req = self.client.request(method, &self.url).header("Content-Type", "application/octet-stream");
-
         for (k, v) in &self.options.headers {
             req = req.header(k, v);
         }
@@ -143,7 +180,7 @@ impl DataSink for HttpSink {
         Ok(())
     }
 
-    fn name(&self) -> &str {
-        &self.url
+    fn name(&self) -> Cow<'_, str> {
+        Cow::Borrowed(&self.url)
     }
 }

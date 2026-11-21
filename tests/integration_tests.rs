@@ -894,3 +894,96 @@ impl FieldSchemaTestExt for FieldSchema {
         RecordSchema::new().field(name, self).parse(r)
     }
 }
+
+struct CustomStaticSource {
+    label: &'static str,
+    bytes: &'static [u8],
+}
+
+#[async_trait]
+impl data_genie::DataSource for CustomStaticSource {
+    async fn get_reader(&self) -> Result<data_genie::ByteReader> {
+        Ok(Box::pin(std::io::Cursor::new(self.bytes)))
+    }
+
+    fn name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(self.label)
+    }
+}
+
+struct CustomVecSink {
+    output: Arc<Mutex<Vec<u8>>>,
+}
+
+#[async_trait]
+impl data_genie::DataSink for CustomVecSink {
+    async fn get_writer(&self) -> Result<data_genie::ByteWriter> {
+        struct VecBufWriter(Arc<Mutex<Vec<u8>>>);
+        impl tokio::io::AsyncWrite for VecBufWriter {
+            fn poll_write(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>, buf: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                std::task::Poll::Ready(Ok(buf.len()))
+            }
+
+            fn poll_flush(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+        Ok(Box::pin(VecBufWriter(Arc::clone(&self.output))))
+    }
+
+    fn name(&self) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed("custom-vec-sink")
+    }
+}
+
+#[test]
+fn test_custom_source_and_sink_ergonomics() {
+    block_on(async {
+        use data_genie::{DataSource, FileSink, FileSource};
+
+        // 1. Custom DataSource passed directly by value into CSVReader, and custom DataSink passed directly into NDJsonWriter
+        let custom_src = CustomStaticSource {
+            label: "in-memory-custom",
+            bytes: b"name,city\nAlice,Dublin\nBob,London\n",
+        };
+        assert_eq!(custom_src.name(), "in-memory-custom");
+        assert_eq!(custom_src.read_bytes().await.unwrap(), b"name,city\nAlice,Dublin\nBob,London\n");
+
+        let sink_buf = Arc::new(Mutex::new(Vec::new()));
+        let custom_sink = CustomVecSink { output: Arc::clone(&sink_buf) };
+        Job::run(CSVReader::new(custom_src), NDJsonWriter::new(custom_sink)).await.unwrap();
+
+        let ndjson_text = String::from_utf8(sink_buf.lock().unwrap().clone()).unwrap();
+        assert!(ndjson_text.contains("\"Alice\""));
+        assert!(ndjson_text.contains("\"London\""));
+
+        // 2. Custom DataSource wrapped in Arc<T> passed directly to NDJsonReader
+        let shared_custom = Arc::new(CustomStaticSource {
+            label: "shared-custom",
+            bytes: b"{\"id\":1}\n{\"id\":2}\n",
+        });
+        let mem_out = MemoryWriter::new();
+        Job::run(NDJsonReader::new(Arc::clone(&shared_custom)), mem_out.clone()).await.unwrap();
+        assert_eq!(mem_out.get_records().len(), 2);
+
+        // 3. FileSource / FileSink by reference, name(), and read_bytes()
+        let temp_path = std::env::temp_dir().join("data_genie_custom_source_test.csv");
+        let file_sink = FileSink::new(&temp_path);
+        let file_src = FileSource::new(&temp_path);
+        let mem_src = MemorySource::new("k,v\nx,1\ny,2\n");
+
+        Job::run(CSVReader::new(&mem_src), CSVWriter::new(&file_sink)).await.unwrap();
+        assert_eq!(file_src.name(), temp_path.to_string_lossy());
+        assert!(String::from_utf8(file_src.read_bytes().await.unwrap()).unwrap().contains("x,1"));
+
+        let roundtrip_out = MemoryWriter::new();
+        Job::run(CSVReader::new(&file_src), roundtrip_out.clone()).await.unwrap();
+        assert_eq!(roundtrip_out.get_records().len(), 2);
+        let _ = std::fs::remove_file(&temp_path);
+    });
+}

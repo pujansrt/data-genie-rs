@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::core::traits::{DataReader, DataSource, RecordStream, SharedWriter};
-use crate::core::transport_utils::{SourceInput, ensure_data_source};
+use crate::core::traits::{DataReader, RecordStream, SharedWriter};
+use crate::core::transport_utils::SourceInput;
 use crate::readers::csv_reader::{CSVReader, CSVReaderOptions};
 use crate::transformers::SchemaValidator;
 
@@ -18,9 +18,9 @@ pub struct TSVReader {
 
 impl TSVReader {
     pub fn new<S: Into<SourceInput>>(source: S) -> Self {
-        let src: Arc<dyn DataSource> = ensure_data_source(source);
-        let inner = CSVReader::new(src).set_field_separator('\t');
-        Self { inner }
+        Self {
+            inner: CSVReader::new(source).set_field_separator('\t'),
+        }
     }
 
     pub fn with_options<S: Into<SourceInput>>(source: S, options: TSVReaderOptions) -> Self {

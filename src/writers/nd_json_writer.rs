@@ -1,15 +1,14 @@
 use async_trait::async_trait;
-use std::pin::Pin;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::core::error::Result;
-use crate::core::traits::{DataRecord, DataSink, DataWriter};
+use crate::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter};
 use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 /// Streaming Newline-Delimited JSON (NDJSON) writer.
 pub struct NDJsonWriter {
     sink: Box<dyn DataSink>,
-    output_stream: Option<Pin<Box<dyn AsyncWrite + Send + Unpin>>>,
+    output_stream: Option<ByteWriter>,
 }
 
 impl NDJsonWriter {

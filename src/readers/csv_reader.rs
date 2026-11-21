@@ -1,7 +1,7 @@
 use async_stream::try_stream;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncBufReadExt;
 
 use crate::core::error::DataGenieError;
 use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
@@ -111,8 +111,7 @@ impl DataReader for CSVReader {
         let dlq_writer = self.dlq_writer.clone();
 
         Box::pin(try_stream! {
-            let async_reader = source.get_reader().await?;
-            let mut reader = BufReader::with_capacity(256 * 1024, async_reader);
+            let mut reader = source.get_buf_reader().await?;
 
             let mut headers: Option<Vec<String>> = None;
             let mut expected_col_count: Option<usize> = None;

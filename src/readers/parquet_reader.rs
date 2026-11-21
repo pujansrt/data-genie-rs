@@ -90,31 +90,19 @@ impl DataReader for ParquetReader {
         let schema = self.schema.clone();
 
         Box::pin(try_stream! {
-            if let Some(file_path) = source.as_file_path() {
-                let file = File::open(file_path)?;
-                let reader = SerializedFileReader::new(file)?;
-                let iter = reader.get_row_iter(None)?;
-                for row_res in iter {
-                    let row = row_res?;
-                    let record = Self::row_to_record(&row);
-                    if let Some(ref validator) = schema {
-                        yield Some(validator.parse(record)?);
-                    } else {
-                        yield Some(record);
-                    }
-                }
+            let reader: Box<dyn FileReader> = if let Some(file_path) = source.as_file_path() {
+                Box::new(SerializedFileReader::new(File::open(file_path)?)?)
             } else {
                 let bytes = Bytes::from(source.read_bytes().await?);
-                let reader = SerializedFileReader::new(bytes)?;
-                let iter = reader.get_row_iter(None)?;
-                for row_res in iter {
-                    let row = row_res?;
-                    let record = Self::row_to_record(&row);
-                    if let Some(ref validator) = schema {
-                        yield Some(validator.parse(record)?);
-                    } else {
-                        yield Some(record);
-                    }
+                Box::new(SerializedFileReader::new(bytes)?)
+            };
+
+            for row_res in reader.get_row_iter(None)? {
+                let record = Self::row_to_record(&row_res?);
+                if let Some(ref validator) = schema {
+                    yield Some(validator.parse(record)?);
+                } else {
+                    yield Some(record);
                 }
             }
         })

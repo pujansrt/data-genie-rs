@@ -2,11 +2,10 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::ser::{Formatter, Serializer};
 use std::io;
-use std::pin::Pin;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::traits::{DataRecord, DataSink, DataWriter};
+use crate::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter};
 use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 const WRITE_BUFFER_THRESHOLD: usize = 256 * 1024; // 256KB batch buffer
@@ -116,7 +115,7 @@ impl Formatter for RecordPrettyFormatter {
 /// Streaming JSON array writer (`[\n  ...\n]` or `[]` when empty) that avoids buffering records in memory.
 pub struct JsonWriter {
     sink: Box<dyn DataSink>,
-    output_stream: Option<Pin<Box<dyn AsyncWrite + Send + Unpin>>>,
+    output_stream: Option<ByteWriter>,
     write_buf: Vec<u8>,
     first_record: bool,
     is_closed: bool,

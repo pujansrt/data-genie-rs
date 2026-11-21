@@ -1,15 +1,14 @@
 use async_trait::async_trait;
-use std::pin::Pin;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::core::error::{DataGenieError, Result};
-use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter, value_to_string};
 use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 /// Streaming Fixed-Width text writer with configurable column widths and optional header row.
 pub struct FixedWidthWriter {
     sink: Box<dyn DataSink>,
-    output_stream: Option<Pin<Box<dyn AsyncWrite + Send + Unpin>>>,
+    output_stream: Option<ByteWriter>,
     field_widths: Vec<usize>,
     field_names: Vec<String>,
     has_field_names_in_first_row: bool,

@@ -1,7 +1,7 @@
 use async_stream::try_stream;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncBufReadExt;
 
 use crate::core::error::DataGenieError;
 use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream};
@@ -103,8 +103,7 @@ impl DataReader for FixedWidthReader {
                 ))?;
             }
 
-            let async_reader = source.get_reader().await?;
-            let mut lines = BufReader::new(async_reader).lines();
+            let mut lines = source.get_buf_reader().await?.lines();
 
             let mut initialized = false;
             let mut field_names = initial_field_names;

@@ -21,6 +21,7 @@ pub use pipeline_parser::{BoxedReader, JobConfig, PipelineConfig, PipelineParser
 #[cfg(feature = "s3")]
 pub use s3_transport::{S3Sink, S3Source};
 pub use traits::{
-    ConsoleLogger, DataReader, DataRecord, DataSink, DataSource, DataWriter, Logger, RecordStream, SharedWriter, SqlConnection, value_to_f64, value_to_string,
+    BufferedByteReader, ByteReader, ByteWriter, ConsoleLogger, DEFAULT_IO_BUFFER_CAPACITY, DataReader, DataRecord, DataSink, DataSource, DataWriter, Logger,
+    RecordStream, SharedWriter, SqlConnection, value_to_f64, value_to_string,
 };
 pub use transport_utils::{SinkInput, SourceInput, ensure_data_sink, ensure_data_source};

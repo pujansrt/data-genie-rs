@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use std::pin::Pin;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::core::error::Result;
-use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter, value_to_string};
 use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 /// Streaming CSV writer that automatically writes headers from the first record unless disabled.
@@ -12,7 +11,7 @@ pub struct CSVWriter {
     sink: Box<dyn DataSink>,
     field_names: Vec<String>,
     header_written: bool,
-    output_stream: Option<Pin<Box<dyn AsyncWrite + Send + Unpin>>>,
+    output_stream: Option<ByteWriter>,
 }
 
 impl CSVWriter {

@@ -1,7 +1,7 @@
 use async_stream::try_stream;
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::AsyncBufReadExt;
 
 use crate::core::error::DataGenieError;
 use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
@@ -67,8 +67,7 @@ impl DataReader for NDJsonReader {
         let dlq_writer = self.dlq_writer.clone();
 
         Box::pin(try_stream! {
-            let async_reader = source.get_reader().await?;
-            let mut lines = BufReader::new(async_reader).lines();
+            let mut lines = source.get_buf_reader().await?.lines();
 
             while let Some(line) = lines.next_line().await? {
                 if line.trim().is_empty() {

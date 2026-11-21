@@ -1,6 +1,8 @@
 # Data Genie
 
-**`data-genie`** is a high-performance, streaming-first **ETL (Extract, Transform, Load) Engine** written in **Rust**. Designed to process massive datasets (GBs to TBs) with a **constant `O(1)` memory footprint**, it combines Tokio's asynchronous streaming runtime with strong Rust type safety, integrated Dead Letter Queues (DLQ), and multi-transport support.
+**`data-genie`** is a high-performance, streaming-first **ETL (Extract, Transform, Load) Engine** written in **Rust**. Designed to process massive datasets (GBs
+to TBs) with a **constant `O(1)` memory footprint**, it combines Tokio's asynchronous streaming runtime with strong Rust type safety, integrated Dead Letter
+Queues (DLQ), and multi-transport support.
 
 ![](./docs/demo.gif)
 ---
@@ -8,7 +10,8 @@
 ## Core Philosophy
 
 - **O(1) Memory Complexity**: Data is streamed record-by-record via `futures::Stream` (`RecordStream`).
-- **Transport Agnostic**: Works seamlessly across Local Files (`FileSource`/`FileSink`), AWS S3 (`S3Source`/`S3Sink`), HTTP APIs (`HttpSource`/`HttpSink`), and Memory (`MemorySource`/`MemorySink`).
+- **Transport Agnostic**: Works seamlessly across Local Files (`FileSource`/`FileSink`), AWS S3 (`S3Source`/`S3Sink`), HTTP APIs (`HttpSource`/`HttpSink`), and
+  Memory (`MemorySource`/`MemorySink`).
 - **Fault Tolerance**: Integrated Dead Letter Queues (DLQ) with automatic upstream propagation, exponential backoff (`RetryingWriter`), and Circuit Breakers.
 - **Programmatic & Declarative Support**: Run code programmatically in **Rust** or declaratively via **YAML** (see examples below).
 
@@ -19,10 +22,10 @@
 In our latest benchmarks (Processing 500k records), Data-Genie used **100x less memory** than standard array-based processing.
 
 | Data Size | Naive Approach (Array-based) | **Data-Genie (Streaming)** |
-| :--- | :--- | :--- |
-| 100 KB | ~10 MB RAM | **~10 MB RAM** |
-| 100 MB | ~150 MB RAM | **~12 MB RAM** |
-| 10 GB | **CRASH (OOM)** | **~15 MB RAM** |
+|:----------|:-----------------------------|:---------------------------|
+| 100 KB    | ~10 MB RAM                   | **~10 MB RAM**             |
+| 100 MB    | ~150 MB RAM                  | **~12 MB RAM**             |
+| 10 GB     | **CRASH (OOM)**              | **~15 MB RAM**             |
 
 ---
 
@@ -38,6 +41,7 @@ cargo run --example validation_dlq
 ```
 
 ### 1. Synchronous Execution
+
 Call `Job::run_blocking(reader, writer)` directly without `#[tokio::main]`
 
 ```rust
@@ -54,6 +58,7 @@ fn main() -> data_genie::Result<()> {
 ```
 
 ### 2. Asynchronous Execution
+
 If your application already runs inside an async runtime (such as `#[tokio::main]`, Axum, or Actix), use `Job::run(reader, writer).await`:
 
 ```rust
@@ -101,14 +106,13 @@ fn main() -> data_genie::Result<()> {
 
 ## Supported Formats & Connectors
 
-| Category | Readers | Writers |
-| :--- | :--- | :--- |
-| **Text / Tabular** | `CSVReader`, `TSVReader`, `FixedWidthReader` | `CSVWriter`, `TSVWriter`, `FixedWidthWriter` |
-| **Structured / Document** | `JsonReader`, `NDJsonReader`, `XMLReader` | `JsonWriter`, `NDJsonWriter`, `XMLWriter` |
-| **Columnar & Spreadsheets** | `ParquetReader`, `XlsxReader` | `ParquetWriter`, `XlsxWriter` |
-| **Databases & APIs** | `SQLReader`, `HttpReader` | `SQLWriter` (Postgres, MySQL, SQLite, Oracle Upserts) |
-| **Composite & Utility** | `MemoryReader` | `MemoryWriter`, `ConsoleWriter`, `MultiWriter`, `RetryingWriter`, `CallbackWriter`, `BatchCallbackWriter`, `ParallelWriter` |
-
+| Category                    | Readers                                      | Writers                                                                                                                     |
+|:----------------------------|:---------------------------------------------|:----------------------------------------------------------------------------------------------------------------------------|
+| **Text / Tabular**          | `CSVReader`, `TSVReader`, `FixedWidthReader` | `CSVWriter`, `TSVWriter`, `FixedWidthWriter`                                                                                |
+| **Structured / Document**   | `JsonReader`, `NDJsonReader`, `XMLReader`    | `JsonWriter`, `NDJsonWriter`, `XMLWriter`                                                                                   |
+| **Columnar & Spreadsheets** | `ParquetReader`, `XlsxReader`                | `ParquetWriter`, `XlsxWriter`                                                                                               |
+| **Databases & APIs**        | `SQLReader`, `HttpReader`                    | `SQLWriter` (Postgres, MySQL, SQLite, Oracle Upserts)                                                                       |
+| **Composite & Utility**     | `MemoryReader`                               | `MemoryWriter`, `ConsoleWriter`, `MultiWriter`, `RetryingWriter`, `CallbackWriter`, `BatchCallbackWriter`, `ParallelWriter` |
 
 ### 4. Optional Cargo Features
 
@@ -116,10 +120,10 @@ By default, `data-genie` compiles with a minimal dependency footprint. Enable he
 
 ```toml
 [dependencies]
-data-genie = { version = "0.1.4", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
+data-genie = { version = "0.1.5", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
 
 # OR enable everything:
-# data-genie = { version = "0.1.4", features = ["full"] }
+# data-genie = { version = "0.1.5", features = ["full"] }
 ```
 
 ### 5. CLI Usage
@@ -137,4 +141,5 @@ data-genie preview users.csv
 # Infer Rust, TypeScript, Zod, and SQL schemas from a dataset
 data-genie infer-schema users.csv
 ```
+
 [Pipeline Builder YAML](https://pujansrt.github.io/data-genie-rs/guide/declarative-pipelines.html#interactive-pipeline-builder)

@@ -1,10 +1,9 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use std::pin::Pin;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use crate::core::error::Result;
-use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter, value_to_string};
 use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 #[derive(Debug, Clone)]
@@ -31,7 +30,7 @@ pub struct XMLWriter {
     record_tag: String,
     add_declaration: bool,
     is_first_record: bool,
-    output_stream: Option<Pin<Box<dyn AsyncWrite + Send + Unpin>>>,
+    output_stream: Option<ByteWriter>,
     is_closed: bool,
 }
 
