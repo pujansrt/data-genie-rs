@@ -12,6 +12,7 @@ Usage:
 
 Commands:
   run <config.yaml>                  Execute a declarative ETL pipeline defined in YAML.
+  validate <config.yaml>             Validate a declarative pipeline without running it.
   preview <file> [--limit N]         Preview the first N records of a data file (default: 5).
   infer-schema <file> [--sample N]   Infer Rust, TypeScript, Zod, and SQL schemas.
   --help, -h                         Show this help message.
@@ -50,6 +51,20 @@ async fn async_main() {
             if let Err(err) = PipelineParser::run(config_path).await {
                 eprintln!("Job Failed: {}", err);
                 std::process::exit(1);
+            }
+        }
+        "validate" => {
+            let Some(config_path) = args.get(1) else {
+                eprintln!("Error: Please provide a path to a pipeline configuration file.");
+                println!("Usage: data-genie validate <pipeline.yaml>");
+                std::process::exit(1);
+            };
+            match PipelineParser::validate_file(config_path) {
+                Ok(()) => println!("Pipeline configuration is valid."),
+                Err(err) => {
+                    eprintln!("Pipeline validation failed: {}", err);
+                    std::process::exit(1);
+                }
             }
         }
         "preview" => {

@@ -49,6 +49,12 @@ The pipeline orchestrator:
   - `job.on_error(|err, record| ...)`
   - `job.on_complete(|metrics| ...)`
 
+`JobMetrics` includes written record count, skipped record count, rejected record count, and DLQ record count. Set `JobOptions::with_record_byte_metrics(true)` to count JSON-encoded record sizes at the job boundary; this performs an extra serialization pass and is disabled by default.
+
+### Pipeline validation
+
+Use `PipelineParser::validate_file(path)` or `PipelineParser::validate_yaml(yaml)` to check declarative configuration without running the pipeline. The CLI equivalent is `data-genie validate pipeline.yaml`.
+
 ---
 
 ## Modules

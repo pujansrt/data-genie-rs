@@ -987,3 +987,413 @@ fn test_custom_source_and_sink_ergonomics() {
         let _ = std::fs::remove_file(&temp_path);
     });
 }
+
+#[test]
+fn test_stdio_transport_and_cli_piping() {
+    use data_genie::{DataSink, DataSource, Logger, SinkInput, SourceInput, StderrLogger, StdinSource, StdoutSink};
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    // Unit-level API checks for StdinSource, StdoutSink, and StderrLogger
+    assert_eq!(StdinSource.name(), "stdin");
+    assert_eq!(StdoutSink.name(), "stdout");
+    let _src: SourceInput = StdinSource.into();
+    let _sink: SinkInput = StdoutSink.into();
+    let logger = StderrLogger;
+    logger.info("stderr info test");
+    logger.warn("stderr warn test");
+    logger.error("stderr error test");
+    logger.debug("stderr debug test");
+
+    // End-to-end CLI test: stdin ("-") -> stdout ("-") keeps stdout clean and routes logs to stderr
+    let dir = std::env::temp_dir().join(format!("data_genie_stdio_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let yaml_path = dir.join("stdio.yaml");
+    std::fs::write(
+        &yaml_path,
+        r#"
+job:
+  name: "Stdio Pipe Test"
+  showProgress: true
+pipeline:
+  read:
+    type: csv
+    path: "-"
+  transform:
+    - type: type-convert
+      fields: [amount]
+      to: float
+    - type: calculate
+      field: tier
+      expression: "amount >= 500 ? 'GOLD' : 'STANDARD'"
+    - type: filter
+      expression: "amount > 100"
+  write:
+    type: ndjson
+    path: "-"
+"#,
+    )
+    .unwrap();
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_data-genie"))
+        .args(["run", yaml_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child.stdin.take().unwrap().write_all(b"id,amount\n1,50\n2,250\n3,600\n").unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "CLI failed: {}", stderr);
+
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "Expected pure NDJSON on stdout, got: {:?}", stdout);
+    let rec0: DataRecord = serde_json::from_str(lines[0]).unwrap();
+    let rec1: DataRecord = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(rec0.get("id"), Some(&json!("2")));
+    assert_eq!(rec0.get("tier"), Some(&json!("STANDARD")));
+    assert_eq!(rec1.get("id"), Some(&json!("3")));
+    assert_eq!(rec1.get("tier"), Some(&json!("GOLD")));
+
+    assert!(stderr.contains("Running Job: Stdio Pipe Test"));
+    assert!(stderr.contains("Job Completed"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_pipeline_validation_and_tsv_xml_calculate_steps() {
+    use data_genie::{PipelineConfig, PipelineSection, ReaderConfig, TransformConfig, WriterConfig};
+    use std::process::Command;
+
+    // 1. Aggregated validation via PipelineConfig::validate & PipelineParser::validate_yaml
+    let missing_section = PipelineConfig {
+        version: None,
+        job: None,
+        pipeline: None,
+    };
+    assert!(
+        missing_section
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("Missing required `pipeline` section")
+    );
+
+    let invalid_yaml = r#"
+pipeline:
+  read:
+    type: xml
+    path: "   "
+    options:
+      delimiter: ",,"
+      hasHeader: "yes"
+  transform:
+    - type: filter
+      expression: "amount >"
+    - type: calculate
+    - type: rename
+    - type: select
+      fields: []
+    - type: type-convert
+      to: boolean
+      fields: []
+    - type: pii-masking
+      masks:
+        email: bogus
+    - type: unknown-step
+  write:
+    type: xml
+    options:
+      rootTag: "   "
+      recordTag: ""
+      addDeclaration: "nope"
+"#;
+    let err = PipelineParser::validate_yaml(invalid_yaml).unwrap_err().to_string();
+    for expected in [
+        "pipeline.read.path must not be empty",
+        "pipeline.read.options.recordPath is required for XML input",
+        "pipeline.read.options.delimiter must be one ASCII character",
+        "pipeline.read.options.hasFieldNamesInFirstRow must be a boolean",
+        "pipeline.transform[0].expression is invalid",
+        "pipeline.transform[1].field is required for `calculate`",
+        "pipeline.transform[1].expression is required for `calculate`",
+        "pipeline.transform[2] (rename) requires a non-empty `mapping`",
+        "pipeline.transform[3] (select) requires a non-empty `fields` list",
+        "pipeline.transform[4].to must be one of `int`, `float`, or `date`",
+        "pipeline.transform[4].fields must be a non-empty list",
+        "pipeline.transform[5].masks.email has unsupported strategy `bogus`",
+        "pipeline.transform[6] has unsupported transform type `unknown-step`",
+        "pipeline.write.path is required for `xml` output",
+        "pipeline.write.options.rootTag must be a non-empty string",
+        "pipeline.write.options.recordTag must be a non-empty string",
+        "pipeline.write.options.addDeclaration must be a boolean",
+    ] {
+        assert!(err.contains(expected), "Expected validation error to contain {:?}, got:\n{}", expected, err);
+    }
+
+    // Also test programmatic PipelineConfig::validate with a valid config
+    let valid_cfg = PipelineConfig {
+        version: Some("1.0".to_string()),
+        job: None,
+        pipeline: Some(PipelineSection {
+            read: ReaderConfig {
+                reader_type: "tsv".to_string(),
+                path: "input.tsv".to_string(),
+                options: None,
+            },
+            transform: Some(vec![TransformConfig {
+                transform_type: "calculate".to_string(),
+                mapping: None,
+                expression: Some("qty * 2".to_string()),
+                field: Some("double_qty".to_string()),
+                fields: None,
+                to: None,
+                masks: None,
+            }]),
+            write: WriterConfig {
+                writer_type: "console".to_string(),
+                path: None,
+                options: None,
+            },
+        }),
+    };
+    valid_cfg.validate().unwrap();
+
+    // 2. CLI `data-genie validate` & end-to-end declarative TSV -> calculate -> XML -> TSV execution
+    let dir = std::env::temp_dir().join(format!("data_genie_val_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let input_tsv = dir.join("input.tsv");
+    let mid_xml = dir.join("mid.xml");
+    let out_tsv = dir.join("out.tsv");
+    let tsv_to_xml_yaml = dir.join("tsv_to_xml.yaml");
+    let xml_to_tsv_yaml = dir.join("xml_to_tsv.yaml");
+    let bad_yaml_path = dir.join("bad.yaml");
+
+    std::fs::write(&input_tsv, "name\tval\nalpha\t10\nbeta\t25\n").unwrap();
+    std::fs::write(
+        &tsv_to_xml_yaml,
+        format!(
+            r#"
+pipeline:
+  read:
+    type: tsv
+    path: "{}"
+  transform:
+    - type: calculate
+      field: doubled
+      expression: "val * 2"
+  write:
+    type: xml
+    path: "{}"
+    options:
+      rootTag: items
+      recordTag: item
+      addDeclaration: true
+"#,
+            input_tsv.display(),
+            mid_xml.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        &xml_to_tsv_yaml,
+        format!(
+            r#"
+pipeline:
+  read:
+    type: xml
+    path: "{}"
+    options:
+      recordPath: "items/item"
+  write:
+    type: tsv
+    path: "{}"
+"#,
+            mid_xml.display(),
+            out_tsv.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(&bad_yaml_path, invalid_yaml).unwrap();
+
+    // validate_file & CLI validate (pass + fail)
+    PipelineParser::validate_file(&tsv_to_xml_yaml).unwrap();
+    PipelineParser::validate_file(&xml_to_tsv_yaml).unwrap();
+    assert!(PipelineParser::validate_file(&bad_yaml_path).is_err());
+
+    let ok_out = Command::new(env!("CARGO_BIN_EXE_data-genie"))
+        .args(["validate", tsv_to_xml_yaml.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(ok_out.status.success());
+    assert!(String::from_utf8_lossy(&ok_out.stdout).contains("Pipeline configuration is valid."));
+
+    let bad_out = Command::new(env!("CARGO_BIN_EXE_data-genie"))
+        .args(["validate", bad_yaml_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!bad_out.status.success());
+    assert!(String::from_utf8_lossy(&bad_out.stderr).contains("Invalid pipeline configuration"));
+
+    // Run both declarative pipelines
+    let m1 = PipelineParser::run_blocking(&tsv_to_xml_yaml).unwrap();
+    assert_eq!(m1.record_count, 2);
+    let xml_text = std::fs::read_to_string(&mid_xml).unwrap();
+    assert!(xml_text.contains("<items>"));
+    assert!(xml_text.contains("<doubled>20</doubled>"));
+    assert!(xml_text.contains("<doubled>50</doubled>"));
+
+    let m2 = PipelineParser::run_blocking(&xml_to_tsv_yaml).unwrap();
+    assert_eq!(m2.record_count, 2);
+    let roundtrip = std::fs::read_to_string(&out_tsv).unwrap();
+    assert_eq!(roundtrip, "name\tval\tdoubled\nalpha\t10\t20\nbeta\t25\t50\n");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_job_metrics_counts_and_record_bytes() {
+    use data_genie::{JobMetrics, JobOptions, RecordStream};
+
+    block_on(async {
+        // 1. Skipped counts from FilteringReader + RemoveDuplicatesReader + null records through decorators
+        struct NullYieldingReader {
+            items: Vec<Option<DataRecord>>,
+        }
+        impl DataReader for NullYieldingReader {
+            fn read(&mut self) -> RecordStream {
+                let items = self.items.clone();
+                Box::pin(async_stream::try_stream! {
+                    for item in items {
+                        yield item;
+                    }
+                })
+            }
+        }
+
+        let r1 = record! { "id" => "1", "keep" => true };
+        let r2 = record! { "id" => "1", "keep" => true }; // duplicate
+        let r3 = record! { "id" => "2", "keep" => false }; // filtered out
+        let r4 = record! { "id" => "3", "keep" => true };
+
+        let null_reader = NullYieldingReader {
+            items: vec![None, Some(r1.clone()), Some(r2), Some(r3), None, Some(r4.clone())],
+        };
+        let transformed = TransformingReader::new(null_reader);
+        let filtered = FilteringReader::new(transformed).add(|r| r.get("keep") == Some(&json!(true)));
+        let deduped = RemoveDuplicatesReader::new(filtered, ["id"]);
+
+        let out = MemoryWriter::new();
+        let default_metrics = Job::run(deduped, out.clone()).await.unwrap();
+        assert_eq!(default_metrics.record_count, 2);
+        assert_eq!(default_metrics.skipped_record_count, 4); // 2 nulls + 1 filtered + 1 duplicate
+        assert_eq!(default_metrics.dlq_record_count, 0);
+        assert_eq!(default_metrics.rejected_record_count, 0);
+        assert_eq!(default_metrics.logical_record_bytes_read, 0);
+        assert_eq!(default_metrics.logical_record_bytes_written, 0);
+
+        // 2. Opt-in logical JSON record byte metrics
+        let expected_bytes = (serde_json::to_vec(&r1).unwrap().len() + serde_json::to_vec(&r4).unwrap().len()) as u64;
+        let byte_metrics = Job::run_with_options(
+            MemoryReader::new([r1, r4]),
+            MemoryWriter::new(),
+            JobOptions::new().with_record_byte_metrics(true),
+        )
+        .await
+        .unwrap();
+        assert_eq!(byte_metrics.record_count, 2);
+        assert_eq!(byte_metrics.logical_record_bytes_read, expected_bytes);
+        assert_eq!(byte_metrics.logical_record_bytes_written, expected_bytes);
+
+        // 3. Shared DLQ across CSVReader + ValidatingReader (no double-counting)
+        let csv_data = "id,age\n1,30\nMALFORMED_ROW\n2,-5\n3,40\n";
+        let dlq = MemoryWriter::new();
+        let validator = FieldValidator::new("age")
+            .add_rule(|v| v.as_str().and_then(|s| s.parse::<i64>().ok()).is_some_and(|n| n >= 0), "age >= 0")
+            .create_record_validation_rule();
+        let reader = ValidatingReader::new(CSVReader::new(MemorySource::new(csv_data)))
+            .add_rule(validator)
+            .with_dlq(dlq.clone());
+        let dlq_metrics = Job::run(reader, MemoryWriter::new()).await.unwrap();
+        assert_eq!(dlq_metrics.record_count, 2);
+        assert_eq!(dlq_metrics.dlq_record_count, 2);
+        assert_eq!(dlq_metrics.rejected_record_count, 2);
+        assert_eq!(dlq.get_records().len(), 2);
+
+        // 4. SchemaValidatingReader without DLQ counts rejected_record_count while dlq_record_count stays 0
+        let schema = RecordSchema::new().field("age", FieldSchema::integer().coerce().min(0.0));
+        let schema_reader = SchemaValidatingReader::new(
+            MemoryReader::new([record! { "age" => "20" }, record! { "age" => "-1" }, record! { "age" => "bad" }]),
+            schema,
+        );
+        let schema_metrics = Job::run(schema_reader, MemoryWriter::new()).await.unwrap();
+        assert_eq!(schema_metrics.record_count, 1);
+        assert_eq!(schema_metrics.dlq_record_count, 0);
+        assert_eq!(schema_metrics.rejected_record_count, 2);
+
+        // 5. Reader with ignore_errors(true) and no DLQ counts rejected_record_count
+        let csv_ignore = CSVReader::new(MemorySource::new("id,name\n1,Alice\nBROKEN\n2,Bob\n")).with_ignore_errors(true);
+        let csv_ignore_metrics = Job::run(csv_ignore, MemoryWriter::new()).await.unwrap();
+        assert_eq!(csv_ignore_metrics.record_count, 2);
+        assert_eq!(csv_ignore_metrics.dlq_record_count, 0);
+        assert_eq!(csv_ignore_metrics.rejected_record_count, 1);
+
+        let ndjson_ignore = NDJsonReader::new(MemorySource::new("{\"id\":1}\n{bad}\n{\"id\":2}\n")).with_ignore_errors(true);
+        let ndjson_ignore_metrics = Job::run(ndjson_ignore, MemoryWriter::new()).await.unwrap();
+        assert_eq!(ndjson_ignore_metrics.record_count, 2);
+        assert_eq!(ndjson_ignore_metrics.dlq_record_count, 0);
+        assert_eq!(ndjson_ignore_metrics.rejected_record_count, 1);
+
+        // 6. Serde backwards compatibility when new JobMetrics fields are absent
+        let legacy_json = r#"{
+            "start_time": "2026-01-01T00:00:00Z",
+            "end_time": "2026-01-01T00:00:01Z",
+            "duration_ms": 1000,
+            "record_count": 10,
+            "records_per_second": 10.0
+        }"#;
+        let parsed: JobMetrics = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(parsed.record_count, 10);
+        assert_eq!(parsed.skipped_record_count, 0);
+        assert_eq!(parsed.dlq_record_count, 0);
+        assert_eq!(parsed.rejected_record_count, 0);
+        assert_eq!(parsed.logical_record_bytes_read, 0);
+        assert_eq!(parsed.logical_record_bytes_written, 0);
+    });
+}
+
+#[test]
+fn test_memory_reader_shared_collection_and_multi_writer_builder() {
+    use futures::StreamExt;
+
+    block_on(async {
+        // Array input, empty Vec type inference, and repeated reads sharing the stored collection
+        let mut reader = MemoryReader::new([
+            record! { "name" => "Alice", "city" => "Dublin" },
+            record! { "name" => "Bob", "city" => "London" },
+        ]);
+
+        let first_pass: Vec<DataRecord> = reader.read().map(|item| item.unwrap().unwrap()).collect().await;
+        let second_pass: Vec<DataRecord> = reader.read().map(|item| item.unwrap().unwrap()).collect().await;
+        assert_eq!(first_pass.len(), 2);
+        assert_eq!(first_pass, second_pass);
+
+        let empty_out = MemoryWriter::new();
+        let empty_metrics = Job::run(MemoryReader::new(vec![]), empty_out.clone()).await.unwrap();
+        assert_eq!(empty_metrics.record_count, 0);
+
+        // MultiWriter::from_writer(...).add(...) ergonomic builder
+        let json_sink = MemorySink::new();
+        let csv_sink = MemorySink::new();
+        let multi = MultiWriter::from_writer(JsonWriter::new(json_sink.clone())).add(CSVWriter::new(csv_sink.clone()));
+        let metrics = Job::run(reader, multi).await.unwrap();
+        assert_eq!(metrics.record_count, 2);
+        assert!(json_sink.get_text().contains("\"Alice\""));
+        assert_eq!(csv_sink.get_text(), "name,city\nAlice,Dublin\nBob,London\n");
+    });
+}

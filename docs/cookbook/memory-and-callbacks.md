@@ -23,6 +23,17 @@ fn main() -> data_genie::Result<()> {
 }
 ```
 
+`MemorySource` holds serialized bytes and is useful when a format reader should parse an in-memory payload. `MemoryReader` accepts already-parsed records. It stores records in shared immutable memory and clones records as they are yielded, avoiding a second full collection copy when `read()` starts. The original collection still remains in memory for the lifetime of the reader.
+
+```rust
+use data_genie::{MemoryReader, record};
+
+let reader = MemoryReader::new([
+    record!("name" => "Alice"),
+    record!("name" => "Bob"),
+]);
+```
+
 ## Callback Writer & Batch Callback Writer
 
 ```rust
@@ -66,3 +77,16 @@ fn main() -> data_genie::Result<()> {
     Ok(())
 }
 ```
+
+`JobMetrics` also reports records skipped by filters/deduplication, rejected by schema validation, and written to a DLQ. To include logical JSON-encoded record sizes, opt in to an extra serialization pass:
+
+```rust
+use data_genie::{CSVReader, Job, JobOptions, JsonWriter};
+
+let options = JobOptions::new().with_record_byte_metrics(true);
+let mut job = Job::with_options(CSVReader::new("input.csv"), JsonWriter::new("output.json"), options);
+let metrics = job.execute_blocking()?;
+println!("{} logical bytes", metrics.logical_record_bytes_written);
+```
+
+These byte counts describe records at the job boundary; they are not raw transport bytes or the exact encoded size of every output format. Byte accounting is disabled by default to avoid the extra serialization work.

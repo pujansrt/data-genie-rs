@@ -1,14 +1,15 @@
 use data_genie::{CSVWriter, Job, JsonWriter, MemoryReader, MemorySink, MultiWriter, record};
 
 fn main() -> data_genie::Result<()> {
-    let reader = MemoryReader::new(vec![
-        record!("name" => "Alice", "city" => "Dublin"),
-        record!("name" => "Bob", "city" => "London"),
-    ]);
+    let record1 = record!("name" => "Alice", "city" => "Dublin");
+    let record2 = record!("name" => "Bob", "city" => "London");
+
+    let reader = MemoryReader::new([record1, record2]);
     let json = MemorySink::new();
     let csv = MemorySink::new();
+
     // Each record is sent to both writers; Job closes both outputs.
-    let writer = MultiWriter::new(vec![Box::new(JsonWriter::new(json.clone())), Box::new(CSVWriter::new(csv.clone()))]);
+    let writer = MultiWriter::from_writer(JsonWriter::new(json.clone())).add(CSVWriter::new(csv.clone()));
 
     Job::run_blocking(reader, writer)?;
     println!("JSON: {}", json.get_text());

@@ -10,7 +10,7 @@ If your application already runs inside an async runtime (such as `#[tokio::main
 | `job.execute_blocking()?` | `job.execute().await?` |
 | `Job::preview_blocking(reader, 5)?` | `Job::preview(reader, 5).await?` |
 | `Job::infer_schema_blocking(reader, 1000, "Row")?` | `Job::infer_schema(reader, 1000, "Row").await?` |
-| `PipelineParser::run_file_blocking("pipeline.yaml")?` | `PipelineParser::run_file("pipeline.yaml").await?` |
+| `PipelineParser::run_blocking("pipeline.yaml")?` | `PipelineParser::run("pipeline.yaml").await?` |
 
 ## Example
 

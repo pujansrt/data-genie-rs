@@ -4,6 +4,7 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use serde_json::{Map, Value};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::core::error::DataGenieError;
 use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
@@ -73,6 +74,7 @@ pub struct XMLReader {
     field_mapping: Option<IndexMap<String, String>>,
     ignore_errors: bool,
     dlq_writer: Option<SharedWriter>,
+    rejected_without_dlq: Arc<AtomicUsize>,
 }
 
 impl XMLReader {
@@ -95,6 +97,7 @@ impl XMLReader {
             field_mapping: options.field_mapping,
             ignore_errors: options.ignore_errors,
             dlq_writer: None,
+            rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -165,6 +168,7 @@ impl DataReader for XMLReader {
         let field_mapping = self.field_mapping.clone();
         let ignore_errors = self.ignore_errors;
         let dlq_writer = self.dlq_writer.clone();
+        let rejected_without_dlq = Arc::clone(&self.rejected_without_dlq);
 
         Box::pin(try_stream! {
             let xml_bytes = source.read_bytes().await?;
@@ -204,6 +208,8 @@ impl DataReader for XMLReader {
                                             dlq_rec.insert("_error".to_string(), Value::String(attr_err));
                                             dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                             dlq.write_dlq(dlq_rec).await?;
+                                        } else {
+                                            rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                         }
                                         break;
                                     } else {
@@ -236,6 +242,8 @@ impl DataReader for XMLReader {
                                             dlq_rec.insert("_error".to_string(), Value::String(attr_err));
                                             dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                             dlq.write_dlq(dlq_rec).await?;
+                                        } else {
+                                            rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                         }
                                         break;
                                     } else {
@@ -322,6 +330,8 @@ impl DataReader for XMLReader {
                                     dlq_rec.insert("_error".to_string(), Value::String(msg));
                                     dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                     dlq.write_dlq(dlq_rec).await?;
+                                } else {
+                                    rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                 }
                             } else {
                                 Err(DataGenieError::Xml(msg))?;
@@ -337,6 +347,8 @@ impl DataReader for XMLReader {
                                 dlq_rec.insert("_error".to_string(), Value::String(err.to_string()));
                                 dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                 dlq.write_dlq(dlq_rec).await?;
+                            } else {
+                                rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                             }
                             break;
                         } else {
@@ -351,6 +363,14 @@ impl DataReader for XMLReader {
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.dlq_writer = Some(writer);
         self.ignore_errors = true;
+    }
+
+    fn dlq_record_count(&self) -> usize {
+        self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count)
+    }
+
+    fn rejected_record_count(&self) -> usize {
+        self.dlq_record_count() + self.rejected_without_dlq.load(Ordering::Relaxed)
     }
 
     fn set_ignore_errors(&mut self, ignore: bool) {

@@ -2,6 +2,7 @@ use async_stream::try_stream;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::core::error::DataGenieError;
@@ -25,6 +26,7 @@ pub struct ValidatingReader<R: DataReader> {
     messages: Arc<Mutex<Vec<ValidationMessage>>>,
     throw_exception_on_failure: bool,
     dlq_writer: Option<SharedWriter>,
+    skipped_records: Arc<AtomicUsize>,
 }
 
 impl<R: DataReader> ValidatingReader<R> {
@@ -35,6 +37,7 @@ impl<R: DataReader> ValidatingReader<R> {
             messages: Arc::new(Mutex::new(Vec::new())),
             throw_exception_on_failure: false,
             dlq_writer: None,
+            skipped_records: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -75,6 +78,7 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
         let messages_store = Arc::clone(&self.messages);
         let throw_on_failure = self.throw_exception_on_failure;
         let dlq_writer = self.dlq_writer.clone();
+        let skipped_records = Arc::clone(&self.skipped_records);
 
         Box::pin(try_stream! {
             while let Some(item) = upstream.next().await {
@@ -98,6 +102,7 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
                 };
 
                 let Some(record) = record_opt else {
+                    skipped_records.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
 
@@ -150,6 +155,20 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.dlq_writer = Some(writer.clone());
         self.reader.set_dlq(writer);
+    }
+
+    fn skipped_record_count(&self) -> usize {
+        self.reader.skipped_record_count() + self.skipped_records.load(Ordering::Relaxed)
+    }
+
+    fn dlq_record_count(&self) -> usize {
+        self.reader
+            .dlq_record_count()
+            .max(self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count))
+    }
+
+    fn rejected_record_count(&self) -> usize {
+        self.reader.rejected_record_count().max(self.dlq_record_count())
     }
 
     fn set_ignore_errors(&mut self, ignore: bool) {

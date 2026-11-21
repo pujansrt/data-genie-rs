@@ -42,6 +42,6 @@ fn main() -> Result<()> {
 ```
 
 ## Why This Works
-1. **Streaming (`O(1)` RAM)**: `CSVReader` streams records one by one.
+1. **Streaming**: `CSVReader` processes one row at a time; memory depends on row size and the SQL writer's configured batch size, not total input size.
 2. **Automatic Batching**: `SQLWriter` groups records into parameterized multi-row `INSERT` batches.
 3. **Backpressure**: The reader pauses automatically while the database commits each batch.

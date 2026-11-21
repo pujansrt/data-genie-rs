@@ -3,6 +3,7 @@ use futures::StreamExt;
 use indexmap::IndexMap;
 use serde_json::{Number, Value};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::core::error::{DataGenieError, Result};
 use crate::core::traits::{DataReader, DataRecord, RecordStream, SharedWriter};
@@ -306,6 +307,8 @@ pub struct SchemaValidatingReader<R: DataReader> {
     reader: R,
     schema: Arc<dyn SchemaValidator>,
     dlq_writer: Option<SharedWriter>,
+    skipped_records: Arc<AtomicUsize>,
+    rejected_without_dlq: Arc<AtomicUsize>,
 }
 
 impl<R: DataReader> SchemaValidatingReader<R> {
@@ -314,6 +317,8 @@ impl<R: DataReader> SchemaValidatingReader<R> {
             reader,
             schema: Arc::new(schema),
             dlq_writer: None,
+            skipped_records: Arc::new(AtomicUsize::new(0)),
+            rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -322,6 +327,8 @@ impl<R: DataReader> SchemaValidatingReader<R> {
             reader,
             schema,
             dlq_writer: None,
+            skipped_records: Arc::new(AtomicUsize::new(0)),
+            rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -338,10 +345,13 @@ impl<R: DataReader + 'static> DataReader for SchemaValidatingReader<R> {
         let mut upstream = self.reader.read();
         let schema = Arc::clone(&self.schema);
         let dlq_writer = self.dlq_writer.clone();
+        let skipped_records = Arc::clone(&self.skipped_records);
+        let rejected_without_dlq = Arc::clone(&self.rejected_without_dlq);
 
         Box::pin(try_stream! {
             while let Some(item) = upstream.next().await {
                 let Some(record) = item? else {
+                    skipped_records.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
 
@@ -355,6 +365,7 @@ impl<R: DataReader + 'static> DataReader for SchemaValidatingReader<R> {
                             dlq_rec.insert("_schema_error".to_string(), Value::String(err.to_string()));
                             dlq.write_dlq(dlq_rec).await?;
                         } else {
+                            rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                             eprintln!("Schema validation failed for record. Skipping. {}", err);
                         }
                     }
@@ -370,6 +381,23 @@ impl<R: DataReader + 'static> DataReader for SchemaValidatingReader<R> {
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.dlq_writer = Some(writer.clone());
         self.reader.set_dlq(writer);
+    }
+
+    fn skipped_record_count(&self) -> usize {
+        self.reader.skipped_record_count() + self.skipped_records.load(Ordering::Relaxed)
+    }
+
+    fn dlq_record_count(&self) -> usize {
+        self.reader
+            .dlq_record_count()
+            .max(self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count))
+    }
+
+    fn rejected_record_count(&self) -> usize {
+        self.reader
+            .rejected_record_count()
+            .max(self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count))
+            + self.rejected_without_dlq.load(Ordering::Relaxed)
     }
 
     fn set_ignore_errors(&mut self, ignore: bool) {

@@ -4,15 +4,19 @@ use std::sync::Arc;
 use crate::core::traits::{DataReader, DataRecord, RecordStream};
 use crate::transformers::SchemaValidator;
 
-/// Streams records from an in-memory `Vec<DataRecord>`.
+/// Streams records from a shared in-memory collection of `DataRecord`s.
 pub struct MemoryReader {
-    records: Vec<DataRecord>,
+    records: Arc<Vec<DataRecord>>,
     schema: Option<Arc<dyn SchemaValidator>>,
 }
 
 impl MemoryReader {
-    pub fn new(records: Vec<DataRecord>) -> Self {
-        Self { records, schema: None }
+    /// Creates a reader from any iterable collection of records, such as a `Vec` or array.
+    pub fn new(records: impl IntoIterator<Item = DataRecord>) -> Self {
+        Self {
+            records: Arc::new(records.into_iter().collect()),
+            schema: None,
+        }
     }
 
     pub fn with_schema<V: SchemaValidator + 'static>(mut self, schema: V) -> Self {
@@ -23,11 +27,11 @@ impl MemoryReader {
 
 impl DataReader for MemoryReader {
     fn read(&mut self) -> RecordStream {
-        let records = self.records.clone();
+        let records = Arc::clone(&self.records);
         let schema = self.schema.clone();
 
         Box::pin(try_stream! {
-            for record in records {
+            for record in records.iter().cloned() {
                 if let Some(ref validator) = schema {
                     let validated = validator.parse(record)?;
                     yield Some(validated);

@@ -6,6 +6,7 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::sync::Mutex;
 
@@ -104,18 +105,27 @@ pub type RecordStream = Pin<Box<dyn Stream<Item = Result<Option<DataRecord>>> + 
 #[derive(Clone)]
 pub struct SharedWriter {
     inner: Arc<Mutex<Box<dyn DataWriter>>>,
+    write_count: Arc<AtomicUsize>,
 }
 
 impl SharedWriter {
     pub fn new<W: DataWriter + 'static>(writer: W) -> Self {
         Self {
             inner: Arc::new(Mutex::new(Box::new(writer))),
+            write_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub async fn write_dlq(&self, record: DataRecord) -> Result<()> {
         let mut guard = self.inner.lock().await;
-        guard.write(record).await
+        guard.write(record).await?;
+        self.write_count.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Number of DLQ records successfully written through this shared handle.
+    pub fn write_count(&self) -> usize {
+        self.write_count.load(Ordering::Relaxed)
     }
 
     pub async fn close_dlq(&self) -> Result<()> {
@@ -199,6 +209,22 @@ pub trait DataSink: Send + Sync {
 pub trait DataReader: Send {
     /// Returns an async stream of records.
     fn read(&mut self) -> RecordStream;
+
+    /// Number of records intentionally dropped by this reader and its upstream readers.
+    fn skipped_record_count(&self) -> usize {
+        0
+    }
+
+    /// Number of records successfully sent to a dead-letter writer by this reader chain.
+    fn dlq_record_count(&self) -> usize {
+        0
+    }
+
+    /// Number of records rejected by this reader chain. By default, records sent to a DLQ are
+    /// considered rejected; validation readers can also count rejected records without a DLQ.
+    fn rejected_record_count(&self) -> usize {
+        self.dlq_record_count()
+    }
 
     /// Sets a Dead Letter Queue (DLQ) writer and propagates it to any upstream reader.
     fn set_dlq(&mut self, _writer: SharedWriter) {}
@@ -302,5 +328,29 @@ impl Logger for ConsoleLogger {
 
     fn debug(&self, message: &str) {
         println!("DEBUG: {}", message);
+    }
+}
+
+/// Logger that sends informational job messages to standard error.
+///
+/// Use it when standard output carries pipeline data.
+#[derive(Debug, Clone, Default)]
+pub struct StderrLogger;
+
+impl Logger for StderrLogger {
+    fn info(&self, message: &str) {
+        eprintln!("{}", message);
+    }
+
+    fn warn(&self, message: &str) {
+        eprintln!("WARN: {}", message);
+    }
+
+    fn error(&self, message: &str) {
+        eprintln!("ERROR: {}", message);
+    }
+
+    fn debug(&self, message: &str) {
+        eprintln!("DEBUG: {}", message);
     }
 }

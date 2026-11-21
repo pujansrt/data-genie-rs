@@ -21,6 +21,7 @@ path. CSV fields are strings by default; [filter_transform.rs](filter_transform.
 shows explicit numeric conversion.
 
 `MemoryReader`, `MemoryWriter`, and `MemorySink` hold their data in memory.
+`MemoryReader` shares its stored record collection and clones records as it yields them; it does not copy the complete collection when a read starts. The collection itself still consumes memory for as long as the reader exists.
 `GroupByReader` also buffers input records, so the aggregation example is intended
 for datasets that fit in memory.
 

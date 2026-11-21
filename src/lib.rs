@@ -9,7 +9,8 @@ pub use core::{
     BoxedReader, BufferedByteReader, ByteReader, ByteWriter, ConsoleLogger, DEFAULT_IO_BUFFER_CAPACITY, DataGenieError, DataReader, DataRecord, DataSink,
     DataSource, DataWriter, FieldSchemaInfo, FileSink, FileSource, InferSchemaOptions, InferredSchema, Job, JobConfig, JobMetrics, JobOptions, Logger,
     MemorySink, MemorySource, PipelineConfig, PipelineParser, PipelineSection, ReaderConfig, RecordStream, Result, SharedWriter, SinkInput, SourceInput,
-    SqlConnection, TransformConfig, WriterConfig, block_on, ensure_data_sink, ensure_data_source, value_to_f64, value_to_string,
+    SqlConnection, StderrLogger, StdinSource, StdoutSink, TransformConfig, WriterConfig, block_on, ensure_data_sink, ensure_data_source, value_to_f64,
+    value_to_string,
 };
 
 #[cfg(feature = "http")]

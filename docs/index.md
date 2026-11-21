@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Data-Genie
   text: High-Performant ETL Engine in Rust
-  tagline: A streaming-first ETL engine for Rust, designed for massive datasets with a constant O(1) memory footprint.
+  tagline: A streaming-first ETL engine for Rust, designed to process records incrementally with memory independent of total input size on streaming paths.
   actions:
     - theme: brand
       text: Get Started
@@ -17,8 +17,8 @@ hero:
       link: https://crates.io/crates/data-genie
 
 features:
-  - title: Streaming-First (O(1) Memory)
-    details: Process 10GB+ files with constant memory footprint using Tokio async streams (RecordStream) or synchronous blocking wrappers.
+  - title: Streaming-First
+    details: Process records incrementally. Memory depends on record size and pipeline state rather than total input size on streaming paths.
   - title: Multi-Format Support
     details: Native support for CSV, TSV, Fixed-Width, JSON, NDJSON, XML, Parquet, Excel (XLSX), and SQL dialects.
   - title: Transport Agnostic

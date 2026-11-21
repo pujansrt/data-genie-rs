@@ -33,6 +33,21 @@ pub struct JobMetrics {
     pub duration_ms: u64,
     pub record_count: usize,
     pub records_per_second: f64,
+    /// Records intentionally dropped by reader decorators, plus null records from the stream.
+    #[serde(default)]
+    pub skipped_record_count: usize,
+    /// Records successfully written to a configured dead-letter queue during this run.
+    #[serde(default)]
+    pub dlq_record_count: usize,
+    /// Records rejected and dropped by validation, or routed to a dead-letter queue.
+    #[serde(default)]
+    pub rejected_record_count: usize,
+    /// Optional JSON-encoded size of records received at the job boundary.
+    #[serde(default)]
+    pub logical_record_bytes_read: u64,
+    /// Optional JSON-encoded size of records sent to the writer.
+    #[serde(default)]
+    pub logical_record_bytes_written: u64,
 }
 
 /// Options for configuring a `Job`.
@@ -40,6 +55,7 @@ pub struct JobMetrics {
 pub struct JobOptions {
     pub logger: Option<Arc<dyn Logger>>,
     pub show_progress: bool,
+    pub track_record_bytes: bool,
 }
 
 impl JobOptions {
@@ -54,6 +70,14 @@ impl JobOptions {
 
     pub fn with_progress(mut self, show_progress: bool) -> Self {
         self.show_progress = show_progress;
+        self
+    }
+
+    /// Enables JSON-size accounting for records at the job boundary.
+    ///
+    /// This is opt-in because computing encoded sizes requires an additional serialization pass.
+    pub fn with_record_byte_metrics(mut self, enabled: bool) -> Self {
+        self.track_record_bytes = enabled;
         self
     }
 }
@@ -89,7 +113,7 @@ pub type ErrorCallback = Box<dyn FnMut(&str, Option<&DataRecord>) + Send>;
 pub type CompleteCallback = Box<dyn FnMut(&JobMetrics) + Send>;
 
 /// `Job` orchestrates an ETL pipeline by streaming records from a `DataReader` into a `DataWriter`
-/// with constant memory complexity, lifecycle hooks, and real-time throughput metrics.
+/// with streaming semantics, lifecycle hooks, and real-time throughput metrics.
 pub struct Job<R: DataReader, W: DataWriter> {
     reader: R,
     writer: W,
@@ -159,6 +183,12 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
         let start_instant = Instant::now();
         let mut last_update = Instant::now();
         let mut record_count: usize = 0;
+        let mut null_record_count: usize = 0;
+        let skipped_baseline = self.reader.skipped_record_count();
+        let dlq_baseline = self.reader.dlq_record_count();
+        let rejected_baseline = self.reader.rejected_record_count();
+        let mut logical_record_bytes_read = 0u64;
+        let mut logical_record_bytes_written = 0u64;
 
         for cb in &mut self.on_start {
             cb(start_time);
@@ -179,8 +209,18 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
                 };
 
                 let Some(record) = record_opt else {
+                    null_record_count += 1;
                     continue;
                 };
+
+                let record_bytes = if self.options.track_record_bytes {
+                    Some(serde_json::to_vec(&record)?.len() as u64)
+                } else {
+                    None
+                };
+                if let Some(bytes) = record_bytes {
+                    logical_record_bytes_read += bytes;
+                }
 
                 let has_record_hooks = !self.on_record.is_empty();
                 let has_error_hooks = !self.on_error.is_empty();
@@ -201,11 +241,19 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
                     self.writer.write(record).await?;
                     record_count += 1;
                 }
+                if let Some(bytes) = record_bytes {
+                    logical_record_bytes_written += bytes;
+                }
 
                 if record_count % 1000 == 0 || (record_count & 255 == 0 && last_update.elapsed().as_millis() > 200) {
                     let now = Utc::now();
                     let duration_ms = start_instant.elapsed().as_millis() as u64;
-                    let current_metrics = Self::calculate_metrics(start_time, now, duration_ms, record_count);
+                    let mut current_metrics = Self::calculate_metrics(start_time, now, duration_ms, record_count);
+                    current_metrics.skipped_record_count = null_record_count + self.reader.skipped_record_count().saturating_sub(skipped_baseline);
+                    current_metrics.dlq_record_count = self.reader.dlq_record_count().saturating_sub(dlq_baseline);
+                    current_metrics.rejected_record_count = self.reader.rejected_record_count().saturating_sub(rejected_baseline);
+                    current_metrics.logical_record_bytes_read = logical_record_bytes_read;
+                    current_metrics.logical_record_bytes_written = logical_record_bytes_written;
 
                     for cb in &mut self.on_progress {
                         cb(&current_metrics);
@@ -235,7 +283,12 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
 
         let end_time = Utc::now();
         let duration_ms = start_instant.elapsed().as_millis() as u64;
-        let metrics = Self::calculate_metrics(start_time, end_time, duration_ms, record_count);
+        let mut metrics = Self::calculate_metrics(start_time, end_time, duration_ms, record_count);
+        metrics.skipped_record_count = null_record_count + self.reader.skipped_record_count().saturating_sub(skipped_baseline);
+        metrics.dlq_record_count = self.reader.dlq_record_count().saturating_sub(dlq_baseline);
+        metrics.rejected_record_count = self.reader.rejected_record_count().saturating_sub(rejected_baseline);
+        metrics.logical_record_bytes_read = logical_record_bytes_read;
+        metrics.logical_record_bytes_written = logical_record_bytes_written;
 
         logger.info("\n--- Job Completed ---");
         logger.info(&format!("Processed: {} records", record_count));
@@ -273,6 +326,11 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
             duration_ms,
             record_count,
             records_per_second,
+            skipped_record_count: 0,
+            dlq_record_count: 0,
+            rejected_record_count: 0,
+            logical_record_bytes_read: 0,
+            logical_record_bytes_written: 0,
         }
     }
 }

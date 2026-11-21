@@ -1,6 +1,6 @@
 [package]
 name = "data-genie"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 authors = ["Pujan Srivastava"]
 license = "MIT"
@@ -43,7 +43,7 @@ http = ["dep:reqwest", "dep:tokio-util", "tokio/net"]
 
 [dependencies]
 # Core minimal dependencies
-tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "io-util", "fs", "sync", "time"] }
+tokio = { version = "1.40", default-features = false, features = ["rt-multi-thread", "io-util", "io-std", "fs", "sync", "time"] }
 futures = { version = "0.3", default-features = false, features = ["std", "alloc"] }
 async-stream = "0.3"
 async-trait = "0.1"

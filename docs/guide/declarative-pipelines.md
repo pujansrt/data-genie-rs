@@ -1,6 +1,6 @@
 # Declarative Pipelines (YAML)
 
-Declarative pipelines let you define ETL jobs in a YAML configuration file and execute them via the `data-genie` CLI or `PipelineParser::run_file`.
+Declarative pipelines let you define ETL jobs in a YAML configuration file and execute them via the `data-genie` CLI or `PipelineParser::run` / `run_blocking`.
 
 ## Quick Start
 
@@ -21,6 +21,34 @@ cargo run --bin data-genie -- run pipeline.yaml
 # or if installed via `cargo install data-genie`:
 data-genie run pipeline.yaml
 ```
+
+Validate a pipeline without processing records:
+
+```bash
+data-genie validate pipeline.yaml
+```
+
+## Standard Input and Output
+
+Use `-` as the path to stream bytes from standard input or write bytes to standard output. Keep informational logs on standard error so the output can be piped safely.
+
+```yaml
+pipeline:
+  read:
+    type: csv
+    path: "-"
+  write:
+    type: ndjson
+    path: "-"
+```
+
+```bash
+cat input.csv | data-genie run pipeline.yaml > output.ndjson
+```
+
+Standard input works best with streaming formats such as CSV and NDJSON. Formats that need random access or parse the complete document can use more memory.
+
+For XML input, set `read.options.recordPath` to the full element path (for example `items/item`) or deep-search path (`//item`) to emit. XML output accepts optional `write.options.rootTag`, `write.options.recordTag`, and `write.options.addDeclaration` values.
 
 ## Interactive Pipeline Builder
 
@@ -77,8 +105,10 @@ You can also execute a declarative YAML file directly from Rust code:
 use data_genie::PipelineParser;
 
 fn main() -> data_genie::Result<()> {
-    let metrics = PipelineParser::run_file_blocking("pipeline.yaml")?;
+    let metrics = PipelineParser::run_blocking("pipeline.yaml")?;
     println!("Processed {} records", metrics.record_count);
     Ok(())
 }
 ```
+
+Call `PipelineParser::validate_file("pipeline.yaml")?` to validate a file without running it, or `PipelineParser::validate_yaml(yaml)?` for an in-memory YAML string. Validation reports multiple configuration issues in one pass.

@@ -2,6 +2,10 @@
 
 Readers stream raw data from a file path or `DataSource` into a `RecordStream`.
 
+`StdinSource` reads bytes from process standard input. It can be passed directly to any format reader, for example `CSVReader::new(StdinSource)`. In YAML pipelines, set `read.path: "-"`.
+
+`MemoryReader::new(records)` accepts a `Vec`, array, or other iterator of `DataRecord`s. Its read stream shares the collection and clones one record as it is yielded, avoiding a full collection clone per read.
+
 ## `CSVReader`
 Streams Comma-Separated Values.
 - **Constructor**: `CSVReader::new("path.csv")` or `CSVReader::from_source(source)`
@@ -16,19 +20,19 @@ Streams Comma-Separated Values.
 - **`FixedWidthReader::new("path.fw", fields)`**: Parses fixed-width columnar text files.
 
 ## `JsonReader` & `NDJsonReader`
-- **`JsonReader::new("path.json")`**: Incremental streaming JSON array parser (`O(1)` memory).
-- **`NDJsonReader::new("path.ndjson")`**: Line-by-line Newline-Delimited JSON reader.
+- **`JsonReader::new("path.json")`**: Reads and parses a complete JSON document in memory.
+- **`NDJsonReader::new("path.ndjson")`**: Streams Newline-Delimited JSON one line at a time; use it for large JSON record sets.
 
 ## `XMLReader`
-Streams XML records by tag name.
+Reads the XML document into memory, then emits matching records by tag name.
 - **Constructor**: `XMLReader::new("path.xml", "record")`
 
 ## `ParquetReader` *(feature: `parquet`)*
-Streams Apache Parquet columnar files using Arrow record batches.
+Streams Apache Parquet columnar rows from local files; non-file `DataSource` inputs are read into memory before parsing.
 - **Constructor**: `ParquetReader::new("path.parquet")`
 
 ## `XlsxReader` *(feature: `xlsx`)*
-Reads Excel `.xlsx` workbooks.
+Reads the complete Excel `.xlsx` workbook into memory, then yields worksheet rows as records.
 - **Constructor**: `XlsxReader::new("path.xlsx")`
 - **Builder Methods**: `.with_sheet("Sheet1")`
 

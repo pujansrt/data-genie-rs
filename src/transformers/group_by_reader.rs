@@ -2,6 +2,8 @@ use async_stream::try_stream;
 use futures::StreamExt;
 use indexmap::IndexMap;
 use serde_json::{Value, json};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::core::traits::{DataReader, DataRecord, RecordStream, SharedWriter, value_to_f64, value_to_string};
 
@@ -25,6 +27,7 @@ pub struct GroupByReader<R: DataReader> {
     reader: R,
     group_by_field: String,
     aggregations: Vec<AggregationOp>,
+    skipped_records: Arc<AtomicUsize>,
 }
 
 impl<R: DataReader> GroupByReader<R> {
@@ -33,6 +36,7 @@ impl<R: DataReader> GroupByReader<R> {
             reader,
             group_by_field: group_by_field.into(),
             aggregations: Vec::new(),
+            skipped_records: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -82,12 +86,14 @@ impl<R: DataReader + 'static> DataReader for GroupByReader<R> {
         let mut upstream = self.reader.read();
         let group_by_field = self.group_by_field.clone();
         let aggregations = self.aggregations.clone();
+        let skipped_records = Arc::clone(&self.skipped_records);
 
         Box::pin(try_stream! {
             let mut grouped: IndexMap<String, (Value, Vec<DataRecord>)> = IndexMap::new();
 
             while let Some(item) = upstream.next().await {
                 let Some(record) = item? else {
+                    skipped_records.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
                 let key_val = record.get(&group_by_field).cloned().unwrap_or(Value::Null);
@@ -153,6 +159,18 @@ impl<R: DataReader + 'static> DataReader for GroupByReader<R> {
 
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.reader.set_dlq(writer);
+    }
+
+    fn skipped_record_count(&self) -> usize {
+        self.reader.skipped_record_count() + self.skipped_records.load(Ordering::Relaxed)
+    }
+
+    fn dlq_record_count(&self) -> usize {
+        self.reader.dlq_record_count()
+    }
+
+    fn rejected_record_count(&self) -> usize {
+        self.reader.rejected_record_count()
     }
 
     fn set_ignore_errors(&mut self, ignore: bool) {

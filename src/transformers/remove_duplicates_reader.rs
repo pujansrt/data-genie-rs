@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
 use crate::core::error::{DataGenieError, Result};
@@ -54,6 +55,7 @@ pub struct RemoveDuplicatesReader<R: DataReader> {
     field_names: Vec<String>,
     store: Arc<dyn DuplicateKeyStore>,
     max_keys: usize,
+    skipped_records: Arc<AtomicUsize>,
 }
 
 impl<R: DataReader> RemoveDuplicatesReader<R> {
@@ -67,6 +69,7 @@ impl<R: DataReader> RemoveDuplicatesReader<R> {
             field_names: field_names.into_iter().map(Into::into).collect(),
             store: Arc::new(MemoryKeyStore::new()),
             max_keys: 1_000_000,
+            skipped_records: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -87,12 +90,14 @@ impl<R: DataReader + 'static> DataReader for RemoveDuplicatesReader<R> {
         let field_names = self.field_names.clone();
         let store = Arc::clone(&self.store);
         let max_keys = self.max_keys;
+        let skipped_records = Arc::clone(&self.skipped_records);
 
         Box::pin(try_stream! {
             let mut current_key_count: usize = 0;
 
             while let Some(item) = upstream.next().await {
                 let Some(record) = item? else {
+                    skipped_records.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
 
@@ -112,6 +117,8 @@ impl<R: DataReader + 'static> DataReader for RemoveDuplicatesReader<R> {
                     store.add(key).await?;
                     current_key_count += 1;
                     yield Some(record);
+                } else {
+                    skipped_records.fetch_add(1, Ordering::Relaxed);
                 }
             }
         })
@@ -119,6 +126,18 @@ impl<R: DataReader + 'static> DataReader for RemoveDuplicatesReader<R> {
 
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.reader.set_dlq(writer);
+    }
+
+    fn skipped_record_count(&self) -> usize {
+        self.reader.skipped_record_count() + self.skipped_records.load(Ordering::Relaxed)
+    }
+
+    fn dlq_record_count(&self) -> usize {
+        self.reader.dlq_record_count()
+    }
+
+    fn rejected_record_count(&self) -> usize {
+        self.reader.rejected_record_count()
     }
 
     fn set_ignore_errors(&mut self, ignore: bool) {

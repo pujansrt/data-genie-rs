@@ -8,6 +8,7 @@ pub mod memory_transport;
 pub mod pipeline_parser;
 #[cfg(feature = "s3")]
 pub mod s3_transport;
+pub mod stdio_transport;
 pub mod traits;
 pub mod transport_utils;
 
@@ -20,8 +21,9 @@ pub use memory_transport::{MemorySink, MemorySource};
 pub use pipeline_parser::{BoxedReader, JobConfig, PipelineConfig, PipelineParser, PipelineSection, ReaderConfig, TransformConfig, WriterConfig};
 #[cfg(feature = "s3")]
 pub use s3_transport::{S3Sink, S3Source};
+pub use stdio_transport::{StdinSource, StdoutSink};
 pub use traits::{
     BufferedByteReader, ByteReader, ByteWriter, ConsoleLogger, DEFAULT_IO_BUFFER_CAPACITY, DataReader, DataRecord, DataSink, DataSource, DataWriter, Logger,
-    RecordStream, SharedWriter, SqlConnection, value_to_f64, value_to_string,
+    RecordStream, SharedWriter, SqlConnection, StderrLogger, value_to_f64, value_to_string,
 };
 pub use transport_utils::{SinkInput, SourceInput, ensure_data_sink, ensure_data_source};

@@ -9,6 +9,15 @@ pub struct MultiWriter {
 }
 
 impl MultiWriter {
+    /// Creates a fan-out writer starting with one writer.
+    ///
+    /// Use [`add`](Self::add) to attach additional writers without boxing them manually.
+    pub fn from_writer<W: DataWriter + 'static>(writer: W) -> Self {
+        Self {
+            writers: vec![Box::new(writer)],
+        }
+    }
+
     pub fn new(writers: Vec<Box<dyn DataWriter>>) -> Self {
         Self { writers }
     }

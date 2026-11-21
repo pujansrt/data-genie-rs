@@ -9,7 +9,9 @@ safety, integrated Dead Letter Queues (DLQ), and multi-transport support.
 
 ## Core Philosophy
 
-- **O(1) Memory Complexity**: Data is streamed record-by-record via `futures::Stream` (`RecordStream`).
+- **Streaming Memory Use**: `RecordStream` processes records one at a time. Streaming memory depends on buffers, the current record, and pipeline state rather
+  than total input size.
+- **Standard Streams**: Use `StdinSource` and `StdoutSink`, or a quoted `"-"` YAML path, to connect pipelines to shell commands.
 - **Transport Agnostic**: Works seamlessly across Local Files (`FileSource`/`FileSink`), AWS S3 (`S3Source`/`S3Sink`), HTTP APIs (`HttpSource`/`HttpSink`), and
   Memory (`MemorySource`/`MemorySink`).
 - **Fault Tolerance**: Integrated Dead Letter Queues (DLQ) with automatic upstream propagation, exponential backoff (`RetryingWriter`), and Circuit Breakers.
@@ -28,12 +30,6 @@ the final row was shortened to reach the exact file size) and wrote NDJSON to `/
 | 100 KiB (102,400 bytes)       |                11 |  7.1 MiB |
 | 100 MiB (104,857,600 bytes)   |            10,486 |  7.9 MiB |
 | 10 GiB (10,737,418,240 bytes) |         1,073,742 |  7.9 MiB |
-
-| Data Size | Naive Approach (Array-based) | **Data-Genie (Streaming)** |
-|:----------|:-----------------------------|:---------------------------|
-| 100 KB    | ~10 MB RAM                   | **~7.1 MB RAM**            |
-| 100 MB    | ~150 MB RAM                  | **~7.9 MB RAM**            |
-| 10 GB     | **CRASH (OOM)**              | **~7.9 MB RAM**            |
 
 Reproduce with `cargo build --release --bin data-genie`, then run `data-genie run pipeline.yaml` under `/usr/bin/time -l`. The pipeline should read the
 generated CSV and write to `/dev/null`; keep the row size approximately 10 KB to make results comparable. These figures are a baseline for that setup, not a
@@ -136,10 +132,10 @@ By default, `data-genie` compiles with a minimal dependency footprint. Enable he
 
 ```toml
 [dependencies]
-data-genie = { version = "0.1.5", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
+data-genie = { version = "0.1.6", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
 
 # OR enable everything:
-# data-genie = { version = "0.1.5", features = ["full"] }
+# data-genie = { version = "0.1.6", features = ["full"] }
 ```
 
 ### 5. CLI Usage

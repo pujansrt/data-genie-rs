@@ -48,6 +48,7 @@ Fetches raw bytes from a `DataSource` and parses them into a stream of `Record` 
 - **`S3Source`**: Streams directly from AWS S3 buckets.
 - **`HttpSource`**: Streams from HTTP/REST endpoints.
 - **`MemorySource`**: Reads from in-memory bytes or strings.
+- **`StdinSource`**: Streams bytes from standard input.
 
 ### 2. Transformers & Filters
 Act as composable middleware wrapping any `DataReader`:
@@ -63,6 +64,7 @@ Persists processed records to a destination:
 - **File/Cloud Writers**: `CSVWriter`, `JsonWriter`, `NDJsonWriter`, `XMLWriter`, `ParquetWriter`, `XlsxWriter`.
 - **`SQLWriter`**: Dialect-aware bulk inserts and idempotent upserts (`Postgres`, `MySQL`, `SQLite`, `Oracle`).
 - **Composite Writers**: `MultiWriter` (fan-out), `ParallelWriter` (multi-core worker pool), `RetryingWriter` (backoff + circuit breaker), `CallbackWriter`, and `BatchCallbackWriter`.
+- **`StdoutSink`**: Streams formatted bytes to standard output; declarative jobs send their logs to standard error when using it.
 
 ### 5. `Job` Orchestrator
 `Job` drives the async stream from reader to writer, tracks throughput (`JobMetrics`), and emits lifecycle callbacks (`on_start`, `on_progress`, `on_record`, `on_error`, `on_complete`).

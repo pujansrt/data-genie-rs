@@ -55,6 +55,18 @@ impl DataReader for TSVReader {
         self.inner.set_dlq(writer);
     }
 
+    fn skipped_record_count(&self) -> usize {
+        self.inner.skipped_record_count()
+    }
+
+    fn dlq_record_count(&self) -> usize {
+        self.inner.dlq_record_count()
+    }
+
+    fn rejected_record_count(&self) -> usize {
+        self.inner.rejected_record_count()
+    }
+
     fn set_ignore_errors(&mut self, ignore: bool) {
         self.inner.set_ignore_errors(ignore);
     }

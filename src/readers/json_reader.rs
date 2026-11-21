@@ -1,6 +1,7 @@
 use async_stream::try_stream;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::core::error::DataGenieError;
 use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
@@ -19,6 +20,7 @@ pub struct JsonReader {
     schema: Option<Arc<dyn SchemaValidator>>,
     ignore_errors: bool,
     dlq_writer: Option<SharedWriter>,
+    rejected_without_dlq: Arc<AtomicUsize>,
 }
 
 impl JsonReader {
@@ -28,6 +30,7 @@ impl JsonReader {
             schema: None,
             ignore_errors: false,
             dlq_writer: None,
+            rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -37,6 +40,7 @@ impl JsonReader {
             schema: options.schema,
             ignore_errors: options.ignore_errors.unwrap_or(false),
             dlq_writer: None,
+            rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -63,6 +67,7 @@ impl DataReader for JsonReader {
         let schema = self.schema.clone();
         let ignore_errors = self.ignore_errors;
         let dlq_writer = self.dlq_writer.clone();
+        let rejected_without_dlq = Arc::clone(&self.rejected_without_dlq);
 
         Box::pin(try_stream! {
             let bytes = source.read_bytes().await?;
@@ -83,6 +88,8 @@ impl DataReader for JsonReader {
                                             dlq_rec.insert("_error".to_string(), Value::String(err.to_string()));
                                             dlq_rec.insert("_type".to_string(), Value::String("validation_error".to_string()));
                                             dlq.write_dlq(dlq_rec).await?;
+                                        } else {
+                                            rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                         }
                                         continue;
                                     } else {
@@ -102,6 +109,8 @@ impl DataReader for JsonReader {
                             dlq_rec.insert("_error".to_string(), Value::String(err.to_string()));
                             dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                             dlq.write_dlq(dlq_rec).await?;
+                        } else {
+                            rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                         }
                     } else {
                         Err(DataGenieError::Json(err))?;
@@ -114,6 +123,14 @@ impl DataReader for JsonReader {
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.dlq_writer = Some(writer);
         self.ignore_errors = true;
+    }
+
+    fn dlq_record_count(&self) -> usize {
+        self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count)
+    }
+
+    fn rejected_record_count(&self) -> usize {
+        self.dlq_record_count() + self.rejected_without_dlq.load(Ordering::Relaxed)
     }
 
     fn set_ignore_errors(&mut self, ignore: bool) {
