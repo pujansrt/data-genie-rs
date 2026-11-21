@@ -10,7 +10,7 @@ homepage = "https://pujansrt.github.io/data-genie-rs/"
 documentation = "https://docs.rs/data-genie"
 keywords = ["etl", "streaming", "data-pipeline", "parquet", "csv"]
 categories = ["data-structures", "asynchronous", "command-line-utilities"]
-exclude = ["examples/input/heavy_data.csv", "badges/*", ".github/*", "docs/*"]
+exclude = ["examples/*", "tests/", "CODEBASE_GUIDE.md", "badges/*", ".github/*", "docs/*", "Cargo.lock", "Cargo.toml.orig"]
 autotests = false
 
 [lib]
