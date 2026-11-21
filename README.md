@@ -1,8 +1,8 @@
 # Data Genie
 
-**`data-genie`** is a high-performance, streaming-first **ETL (Extract, Transform, Load) Engine** written in **Rust**. Designed to process massive datasets (GBs
-to TBs) with a **constant `O(1)` memory footprint**, it combines Tokio's asynchronous streaming runtime with strong Rust type safety, integrated Dead Letter
-Queues (DLQ), and multi-transport support.
+**`data-genie`** is a high-performance, streaming-first **ETL (Extract, Transform, Load) Engine** written in **Rust**. Streaming pipelines process records
+incrementally, so memory usage does not grow with the total number of input records. It combines Tokio's asynchronous streaming runtime with strong Rust type
+safety, integrated Dead Letter Queues (DLQ), and multi-transport support.
 
 ![](./docs/demo.gif)
 ---
@@ -17,15 +17,31 @@ Queues (DLQ), and multi-transport support.
 
 ---
 
-## Why Data-Genie? (Performance Benchmark)
+## Memory Use
 
-In our latest benchmarks (Processing 500k records), Data-Genie used **100x less memory** than standard array-based processing.
+Here is a measured baseline for the built-in streaming path. A release build read a CSV file with one string field per data row (rows were approximately 10 KB;
+the final row was shortened to reach the exact file size) and wrote NDJSON to `/dev/null`. Peak resident set size (RSS) was measured with macOS
+`/usr/bin/time -l` on an arm64 machine using Rust 1.95.0.
+
+| Input size                    | Records processed | Peak RSS |
+|:------------------------------|------------------:|---------:|
+| 100 KiB (102,400 bytes)       |                11 |  7.1 MiB |
+| 100 MiB (104,857,600 bytes)   |            10,486 |  7.9 MiB |
+| 10 GiB (10,737,418,240 bytes) |         1,073,742 |  7.9 MiB |
 
 | Data Size | Naive Approach (Array-based) | **Data-Genie (Streaming)** |
 |:----------|:-----------------------------|:---------------------------|
-| 100 KB    | ~10 MB RAM                   | **~10 MB RAM**             |
-| 100 MB    | ~150 MB RAM                  | **~12 MB RAM**             |
-| 10 GB     | **CRASH (OOM)**              | **~15 MB RAM**             |
+| 100 KB    | ~10 MB RAM                   | **~7.1 MB RAM**            |
+| 100 MB    | ~150 MB RAM                  | **~7.9 MB RAM**            |
+| 10 GB     | **CRASH (OOM)**              | **~7.9 MB RAM**            |
+
+Reproduce with `cargo build --release --bin data-genie`, then run `data-genie run pipeline.yaml` under `/usr/bin/time -l`. The pipeline should read the
+generated CSV and write to `/dev/null`; keep the row size approximately 10 KB to make results comparable. These figures are a baseline for that setup, not a
+guarantee for every pipeline.
+
+Memory remains independent of the number of records for the streaming path, but it is not a fixed amount for every workload. A single very large record,
+full-file formats or operations, grouping and deduplication state, parallel batches, and in-memory sources or sinks can increase memory use. For example,
+`GroupByReader` retains aggregate state until input is exhausted, and `MemoryWriter` retains all output records.
 
 ---
 
