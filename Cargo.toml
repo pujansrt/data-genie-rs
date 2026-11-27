@@ -1,6 +1,6 @@
 [package]
 name = "data-genie"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2024"
 authors = ["Pujan Srivastava"]
 license = "MIT"
@@ -10,7 +10,12 @@ homepage = "https://pujansrt.github.io/data-genie-rs/"
 documentation = "https://docs.rs/data-genie"
 keywords = ["etl", "streaming", "data-pipeline", "parquet", "csv"]
 categories = ["data-structures", "asynchronous", "command-line-utilities"]
-exclude = ["examples/*", "tests/", "CODEBASE_GUIDE.md", "badges/*", ".github/*", "docs/*", "Cargo.lock"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+]
 autotests = false
 
 [lib]
@@ -70,5 +75,10 @@ object_store = { version = "0.14", default-features = false, features = ["aws"],
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
 
 
