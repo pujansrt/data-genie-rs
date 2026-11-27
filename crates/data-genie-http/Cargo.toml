@@ -1,0 +1,26 @@
+[package]
+name = "data-genie-http"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "HTTP/REST streaming transport and paginated JSON reader for data-genie"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/data-genie-http"
+keywords = ["etl", "http", "rest", "data-genie"]
+categories = ["web-programming::http-client", "asynchronous"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+]
+
+[dependencies]
+data-genie-core.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio = { version = "1.40", default-features = false, features = ["io-util", "net"] }
+tokio-util.workspace = true

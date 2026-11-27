@@ -609,29 +609,128 @@ dependencies = [
 
 [[package]]
 name = "data-genie"
-version = "0.2.0"
+version = "0.3.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "data-genie-core",
+ "data-genie-http",
+ "data-genie-parquet",
+ "data-genie-s3",
+ "data-genie-xlsx",
+ "data-genie-xml",
+ "data-genie-yaml",
+ "futures-util",
+ "indexmap",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "data-genie-cli"
+version = "0.3.0"
+dependencies = [
+ "data-genie",
+ "serde_json",
+]
+
+[[package]]
+name = "data-genie-core"
+version = "0.3.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "chrono",
+ "csv",
+ "futures-core",
+ "futures-util",
+ "indexmap",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
+name = "data-genie-http"
+version = "0.3.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "data-genie-core",
+ "futures-util",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "data-genie-parquet"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "async-stream",
  "async-trait",
  "bytes",
- "calamine",
- "chrono",
- "csv",
- "futures",
+ "data-genie-core",
  "indexmap",
- "object_store",
  "parquet",
- "quick-xml 0.42.0",
- "regex",
- "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "data-genie-s3"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "data-genie-core",
+ "futures-util",
+ "object_store",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "data-genie-xlsx"
+version = "0.3.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "calamine",
+ "data-genie-core",
  "rust_xlsxwriter",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "data-genie-xml"
+version = "0.3.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "data-genie-core",
+ "indexmap",
+ "quick-xml 0.42.0",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "data-genie-yaml"
+version = "0.3.0"
+dependencies = [
+ "data-genie-core",
+ "data-genie-xml",
+ "indexmap",
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "sha2",
- "tokio",
- "tokio-util",
 ]
 
 [[package]]
@@ -762,20 +861,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
-name = "futures"
-version = "0.3.34"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
-dependencies = [
- "futures-channel",
- "futures-core",
- "futures-io",
- "futures-sink",
- "futures-task",
- "futures-util",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -826,7 +911,6 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
- "futures-channel",
  "futures-core",
  "futures-io",
  "futures-macro",

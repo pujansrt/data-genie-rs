@@ -3,12 +3,11 @@ use data_genie::{
     BasicFieldTransformer, BatchCallbackWriter, CSVReader, CSVWriter, CallbackWriter, ConsoleWriter, DataGenieError, DataReader, DataRecord, DataWriter,
     FieldFilter, FieldSchema, FieldValidator, FilterExpression, FilteringReader, FixedWidthReader, FixedWidthWriter, GroupByReader, InferSchemaOptions, Job,
     JsonReader, JsonWriter, MapFields, MaskStrategy, MemoryReader, MemorySink, MemorySource, MemoryWriter, MultiWriter, NDJsonReader, NDJsonWriter,
-    PIIMaskingTransformer, ParallelWriter, ParallelWriterOptions, PipelineParser, RecordSchema, RemoveDuplicatesReader, RemoveFields, RenameField, Result,
-    RetryOptions, RetryingWriter, SQLReader, SQLWriter, SchemaValidatingReader, SchemaValidator, SelectFields, SetCalculatedField, SetField, SharedWriter,
-    SqlConnection, SqlDialect, TSVReader, TSVReaderOptions, TSVWriter, TransformingReader, ValidatingReader, XMLReader, XMLReaderOptions, XMLWriter,
-    XMLWriterOptions, between, block_on, greater_than, is_empty, is_not_null, is_type, less_than, pattern_match, record, value_match,
+    PIIMaskingTransformer, ParallelWriter, ParallelWriterOptions, RecordSchema, RemoveDuplicatesReader, RemoveFields, RenameField, Result, RetryOptions,
+    RetryingWriter, SQLReader, SQLWriter, SchemaValidatingReader, SchemaValidator, SelectFields, SetCalculatedField, SetField, SharedWriter, SqlConnection,
+    SqlDialect, TSVReader, TSVReaderOptions, TSVWriter, TransformingReader, ValidatingReader, between, block_on, greater_than, is_empty, is_not_null, is_type,
+    less_than, pattern_match, record, value_match,
 };
-use indexmap::IndexMap;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 
@@ -182,8 +181,11 @@ fn test_tsv_and_fixed_width_handlers() {
     assert_eq!(parsed_fw[1].get("status"), Some(&json!("PENDING")));
 }
 
+#[cfg(feature = "xml")]
 #[test]
 fn test_xml_reader_and_writer() {
+    use data_genie::{XMLReader, XMLReaderOptions, XMLWriter, XMLWriterOptions};
+    use indexmap::IndexMap;
     let xml_data = r#"<?xml version="1.0" encoding="UTF-8"?>
 <library>
   <ns:book id="101" category="programming">
@@ -586,11 +588,14 @@ fn test_composite_writers_and_infer_schema_and_declarative_yaml() {
         assert!(inferred.zod.contains("z.object"));
         assert!(inferred.sql.contains("CREATE TABLE users"));
 
-        let dir = std::env::temp_dir().join(format!("data_genie_yaml_{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let out_json = dir.join("declarative-output.json");
-        let yaml = format!(
-            r#"
+        #[cfg(feature = "yaml")]
+        {
+            use data_genie::PipelineParser;
+            let dir = std::env::temp_dir().join(format!("data_genie_yaml_{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let out_json = dir.join("declarative-output.json");
+            let yaml = format!(
+                r#"
 version: '1.0'
 job:
   name: "Declarative Test Job"
@@ -615,13 +620,14 @@ pipeline:
     type: json
     path: {}
 "#,
-            out_json.display()
-        );
+                out_json.display()
+            );
 
-        let metrics = PipelineParser::run_from_yaml(&yaml).await.unwrap();
-        assert!(metrics.record_count > 0);
-        assert!(out_json.exists());
-        let _ = std::fs::remove_dir_all(&dir);
+            let metrics = PipelineParser::run_from_yaml(&yaml).await.unwrap();
+            assert!(metrics.record_count > 0);
+            assert!(out_json.exists());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     });
 }
 
@@ -989,10 +995,8 @@ fn test_custom_source_and_sink_ergonomics() {
 }
 
 #[test]
-fn test_stdio_transport_and_cli_piping() {
+fn test_stdio_transport_api() {
     use data_genie::{DataSink, DataSource, Logger, SinkInput, SourceInput, StderrLogger, StdinSource, StdoutSink};
-    use std::io::Write;
-    use std::process::{Command, Stdio};
 
     // Unit-level API checks for StdinSource, StdoutSink, and StderrLogger
     assert_eq!(StdinSource.name(), "stdin");
@@ -1004,71 +1008,12 @@ fn test_stdio_transport_and_cli_piping() {
     logger.warn("stderr warn test");
     logger.error("stderr error test");
     logger.debug("stderr debug test");
-
-    // End-to-end CLI test: stdin ("-") -> stdout ("-") keeps stdout clean and routes logs to stderr
-    let dir = std::env::temp_dir().join(format!("data_genie_stdio_{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let yaml_path = dir.join("stdio.yaml");
-    std::fs::write(
-        &yaml_path,
-        r#"
-job:
-  name: "Stdio Pipe Test"
-  showProgress: true
-pipeline:
-  read:
-    type: csv
-    path: "-"
-  transform:
-    - type: type-convert
-      fields: [amount]
-      to: float
-    - type: calculate
-      field: tier
-      expression: "amount >= 500 ? 'GOLD' : 'STANDARD'"
-    - type: filter
-      expression: "amount > 100"
-  write:
-    type: ndjson
-    path: "-"
-"#,
-    )
-    .unwrap();
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_data-genie"))
-        .args(["run", yaml_path.to_str().unwrap()])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-
-    child.stdin.take().unwrap().write_all(b"id,amount\n1,50\n2,250\n3,600\n").unwrap();
-
-    let output = child.wait_with_output().unwrap();
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(output.status.success(), "CLI failed: {}", stderr);
-
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 2, "Expected pure NDJSON on stdout, got: {:?}", stdout);
-    let rec0: DataRecord = serde_json::from_str(lines[0]).unwrap();
-    let rec1: DataRecord = serde_json::from_str(lines[1]).unwrap();
-    assert_eq!(rec0.get("id"), Some(&json!("2")));
-    assert_eq!(rec0.get("tier"), Some(&json!("STANDARD")));
-    assert_eq!(rec1.get("id"), Some(&json!("3")));
-    assert_eq!(rec1.get("tier"), Some(&json!("GOLD")));
-
-    assert!(stderr.contains("Running Job: Stdio Pipe Test"));
-    assert!(stderr.contains("Job Completed"));
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[cfg(feature = "yaml")]
 #[test]
 fn test_pipeline_validation_and_tsv_xml_calculate_steps() {
-    use data_genie::{PipelineConfig, PipelineSection, ReaderConfig, TransformConfig, WriterConfig};
-    use std::process::Command;
+    use data_genie::{PipelineConfig, PipelineParser, PipelineSection, ReaderConfig, TransformConfig, WriterConfig};
 
     // 1. Aggregated validation via PipelineConfig::validate & PipelineParser::validate_yaml
     let missing_section = PipelineConfig {
@@ -1221,24 +1166,10 @@ pipeline:
     .unwrap();
     std::fs::write(&bad_yaml_path, invalid_yaml).unwrap();
 
-    // validate_file & CLI validate (pass + fail)
+    // validate_file (pass + fail)
     PipelineParser::validate_file(&tsv_to_xml_yaml).unwrap();
     PipelineParser::validate_file(&xml_to_tsv_yaml).unwrap();
     assert!(PipelineParser::validate_file(&bad_yaml_path).is_err());
-
-    let ok_out = Command::new(env!("CARGO_BIN_EXE_data-genie"))
-        .args(["validate", tsv_to_xml_yaml.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(ok_out.status.success());
-    assert!(String::from_utf8_lossy(&ok_out.stdout).contains("Pipeline configuration is valid."));
-
-    let bad_out = Command::new(env!("CARGO_BIN_EXE_data-genie"))
-        .args(["validate", bad_yaml_path.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(!bad_out.status.success());
-    assert!(String::from_utf8_lossy(&bad_out.stderr).contains("Invalid pipeline configuration"));
 
     // Run both declarative pipelines
     let m1 = PipelineParser::run_blocking(&tsv_to_xml_yaml).unwrap();
@@ -1369,7 +1300,7 @@ fn test_job_metrics_counts_and_record_bytes() {
 
 #[test]
 fn test_memory_reader_shared_collection_and_multi_writer_builder() {
-    use futures::StreamExt;
+    use futures_util::StreamExt;
 
     block_on(async {
         // Array input, empty Vec type inference, and repeated reads sharing the stored collection
@@ -1402,9 +1333,9 @@ fn test_memory_reader_shared_collection_and_multi_writer_builder() {
 #[test]
 fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure() {
     block_on(async {
+        use data_genie::s3::object_store::path::Path as ObjectPath;
+        use data_genie::s3::object_store::{Attribute, ObjectStoreExt};
         use data_genie::{HttpSink, HttpSinkOptions, RecordStream, S3Sink, S3Source};
-        use object_store::path::Path as ObjectPath;
-        use object_store::{Attribute, ObjectStoreExt};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -1423,10 +1354,7 @@ fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure(
 
         let path = ObjectPath::from("reports/out.csv");
         let obj = store.get(&path).await.unwrap();
-        assert_eq!(
-            obj.attributes.get(&Attribute::ContentType).map(|v| v.as_ref()),
-            Some("text/csv")
-        );
+        assert_eq!(obj.attributes.get(&Attribute::ContentType).map(|v| v.as_ref()), Some("text/csv"));
         let bytes = obj.bytes().await.unwrap();
         assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), "id,name\n1,Alice\n");
 
@@ -1462,17 +1390,21 @@ fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure(
             "hi  \n"
         );
 
-        let s3_xml = S3Sink::new(Arc::clone(&store), "bucket", "reports/out.xml");
-        let mut xml_w = XMLWriter::new(s3_xml);
-        xml_w.write(record! { "a" => "1" }).await.unwrap();
-        xml_w.close().await.unwrap();
-        xml_w.close().await.unwrap();
-        assert!(xml_w.write(record! { "a" => "2" }).await.is_err());
-        assert!(
-            String::from_utf8(store.get(&ObjectPath::from("reports/out.xml")).await.unwrap().bytes().await.unwrap().to_vec())
-                .unwrap()
-                .contains("<a>1</a>")
-        );
+        #[cfg(feature = "xml")]
+        {
+            use data_genie::XMLWriter;
+            let s3_xml = S3Sink::new(Arc::clone(&store), "bucket", "reports/out.xml");
+            let mut xml_w = XMLWriter::new(s3_xml);
+            xml_w.write(record! { "a" => "1" }).await.unwrap();
+            xml_w.close().await.unwrap();
+            xml_w.close().await.unwrap();
+            assert!(xml_w.write(record! { "a" => "2" }).await.is_err());
+            assert!(
+                String::from_utf8(store.get(&ObjectPath::from("reports/out.xml")).await.unwrap().bytes().await.unwrap().to_vec())
+                    .unwrap()
+                    .contains("<a>1</a>")
+            );
+        }
 
         // 2. Failed Job must NOT upload partial/truncated payload to S3!
         struct MidStreamFailReader;
@@ -1511,9 +1443,7 @@ fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure(
                     let raw = String::from_utf8_lossy(&buf[..n]).to_string();
                     rc.fetch_add(1, Ordering::SeqCst);
                     hs.lock().unwrap().push(raw);
-                    let _ = socket
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-                        .await;
+                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await;
                 });
             }
         });
@@ -1526,10 +1456,7 @@ fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure(
         assert_eq!(request_count.load(Ordering::SeqCst), 0);
 
         // Successful upload with custom Content-Type + double close sends exactly 1 request and 1 Content-Type header
-        let http_sink = HttpSink::with_options(
-            &upload_url,
-            HttpSinkOptions::default().with_header("Content-Type", "application/json"),
-        );
+        let http_sink = HttpSink::with_options(&upload_url, HttpSinkOptions::default().with_header("Content-Type", "application/json"));
         let mut json_http_w = JsonWriter::new(http_sink);
         json_http_w.write(record! { "ok" => true }).await.unwrap();
         json_http_w.close().await.unwrap();
@@ -1537,10 +1464,7 @@ fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure(
 
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
         let raw_req = &recorded_headers.lock().unwrap()[0];
-        let ct_header_count = raw_req
-            .lines()
-            .filter(|line| line.to_ascii_lowercase().starts_with("content-type:"))
-            .count();
+        let ct_header_count = raw_req.lines().filter(|line| line.to_ascii_lowercase().starts_with("content-type:")).count();
         assert_eq!(ct_header_count, 1, "Expected single Content-Type header, got:\n{}", raw_req);
         assert!(raw_req.to_ascii_lowercase().contains("content-type: application/json"));
     });
@@ -1556,12 +1480,7 @@ fn test_parallel_writer_sync_construction_error_propagation_and_cleanup() {
         let out = shared_out.clone();
         move |_idx| out.clone()
     });
-    let recs = vec![
-        record! { "id" => 1 },
-        record! { "id" => 2 },
-        record! { "id" => 3 },
-        record! { "id" => 4 },
-    ];
+    let recs = vec![record! { "id" => 1 }, record! { "id" => 2 }, record! { "id" => 3 }, record! { "id" => 4 }];
     Job::run_blocking(MemoryReader::new(recs.clone()), pw).unwrap();
     assert_eq!(shared_out.len(), 4);
 
@@ -1683,12 +1602,7 @@ fn test_retrying_writer_with_batch_callback_close_retry_and_half_open_circuit() 
         let input: Vec<DataRecord> = (1..=5).map(|i| record! { "id" => i }).collect();
         Job::run(MemoryReader::new(input), retrying).await.unwrap();
 
-        let ids: Vec<i64> = delivered
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|r| r.get("id").unwrap().as_i64().unwrap())
-            .collect();
+        let ids: Vec<i64> = delivered.lock().unwrap().iter().map(|r| r.get("id").unwrap().as_i64().unwrap()).collect();
         assert_eq!(ids, vec![1, 2, 3, 4, 5], "No dropped or duplicated records across batch retries");
 
         // 2. Half-open circuit breaker must immediately re-open on a single failed probe
@@ -1770,8 +1684,7 @@ fn test_multi_writer_closes_and_aborts_all_children_on_error() {
         // Abort propagates to every child writer
         let a1 = Arc::new(AtomicBool::new(false));
         let a2 = Arc::new(AtomicBool::new(false));
-        let mut multi_abort = MultiWriter::from_writer(FailOnCloseWriter { aborted: Arc::clone(&a1) })
-            .add(FailOnCloseWriter { aborted: Arc::clone(&a2) });
+        let mut multi_abort = MultiWriter::from_writer(FailOnCloseWriter { aborted: Arc::clone(&a1) }).add(FailOnCloseWriter { aborted: Arc::clone(&a2) });
         multi_abort.abort().await.unwrap();
         assert!(a1.load(Ordering::SeqCst));
         assert!(a2.load(Ordering::SeqCst));
@@ -1847,11 +1760,7 @@ fn test_dlq_chained_ownership_distinct_dlqs_and_upstream_error_propagation() {
                     .create_record_validation_rule(),
             )
             .with_dlq(dlq_inner.clone());
-        let outer_v = SchemaValidatingReader::new(
-            inner_v,
-            RecordSchema::new().field("score", FieldSchema::integer().min(50.0)),
-        )
-        .with_dlq(dlq_outer.clone());
+        let outer_v = SchemaValidatingReader::new(inner_v, RecordSchema::new().field("score", FieldSchema::integer().min(50.0))).with_dlq(dlq_outer.clone());
 
         let distinct_out = MemoryWriter::new();
         let distinct_metrics = Job::run(outer_v, distinct_out.clone()).await.unwrap();
@@ -1973,11 +1882,7 @@ fn test_csv_tsv_ndjson_json_fixed_width_p1_edge_cases() {
         assert_eq!(rows[1].get("note"), Some(&json!("plain")));
 
         // Non-ASCII delimiter returns Config error
-        let bad_delim_res = Job::run(
-            CSVReader::new(MemorySource::new("a│b\n1│2\n")).set_field_separator('│'),
-            MemoryWriter::new(),
-        )
-        .await;
+        let bad_delim_res = Job::run(CSVReader::new(MemorySource::new("a│b\n1│2\n")).set_field_separator('│'), MemoryWriter::new()).await;
         assert!(matches!(bad_delim_res, Err(DataGenieError::Config(_))));
 
         // Invalid UTF-8 line in CSV routed to DLQ without aborting subsequent valid lines
@@ -1986,12 +1891,9 @@ fn test_csv_tsv_ndjson_json_fixed_width_p1_edge_cases() {
         bad_utf8_csv.extend_from_slice(b"2,Bob\n");
         let csv_dlq = MemoryWriter::new();
         let csv_utf8_out = MemoryWriter::new();
-        Job::run(
-            CSVReader::new(MemorySource::new(bad_utf8_csv)).with_dlq(csv_dlq.clone()),
-            csv_utf8_out.clone(),
-        )
-        .await
-        .unwrap();
+        Job::run(CSVReader::new(MemorySource::new(bad_utf8_csv)).with_dlq(csv_dlq.clone()), csv_utf8_out.clone())
+            .await
+            .unwrap();
         assert_eq!(csv_utf8_out.len(), 2);
         assert_eq!(csv_dlq.len(), 1);
         assert_eq!(csv_dlq.get_records()[0].get("_type"), Some(&json!("parse_error")));
@@ -2022,12 +1924,9 @@ fn test_csv_tsv_ndjson_json_fixed_width_p1_edge_cases() {
         assert_eq!(tsv_rows[1].get("price"), Some(&json!("")));
 
         let tsv_sink = MemorySink::new();
-        Job::run(
-            MemoryReader::new([record! { "a" => "x\ty\nz", "b" => "ok" }]),
-            TSVWriter::new(&tsv_sink),
-        )
-        .await
-        .unwrap();
+        Job::run(MemoryReader::new([record! { "a" => "x\ty\nz", "b" => "ok" }]), TSVWriter::new(&tsv_sink))
+            .await
+            .unwrap();
         assert_eq!(tsv_sink.get_text(), "a\tb\nx y z\tok\n");
 
         // 3. NDJSON: BOM stripped, bad UTF-8 line DLQ'd without aborting, validation_error _type & _raw
@@ -2106,8 +2005,10 @@ fn test_csv_tsv_ndjson_json_fixed_width_p1_edge_cases() {
     });
 }
 
+#[cfg(feature = "xml")]
 #[test]
 fn test_xml_p1_validation_control_chars_empty_elements_and_namespaces() {
+    use data_genie::{XMLReader, XMLReaderOptions, XMLWriter, XMLWriterOptions};
     block_on(async {
         // XMLWriter rejects invalid tag/field names and strips illegal control chars
         let bad_key_sink = MemorySink::new();
@@ -2126,12 +2027,9 @@ fn test_xml_p1_validation_control_chars_empty_elements_and_namespaces() {
         assert!(bad_root.write(record! { "ok" => "v" }).await.is_err());
 
         let ctrl_sink = MemorySink::new();
-        Job::run(
-            MemoryReader::new([record! { "msg" => "a\u{0000}\u{0007}b<c>" }]),
-            XMLWriter::new(&ctrl_sink),
-        )
-        .await
-        .unwrap();
+        Job::run(MemoryReader::new([record! { "msg" => "a\u{0000}\u{0007}b<c>" }]), XMLWriter::new(&ctrl_sink))
+            .await
+            .unwrap();
         let xml_text = ctrl_sink.get_text();
         assert!(xml_text.contains("<msg>ab&lt;c&gt;</msg>"));
         assert!(!xml_text.contains('\0'));
@@ -2185,9 +2083,7 @@ fn test_parquet_and_xlsx_p1_validation_and_sheet_errors() {
         // Numeric 1/0 coerced for Boolean + optional null accepted
         let ok_pq_sink = MemorySink::new();
         let ok_pq = ParquetWriter::with_schema(&ok_pq_sink, schema);
-        Job::run(MemoryReader::new([record! { "id" => 7, "flag" => 1 }]), ok_pq)
-            .await
-            .unwrap();
+        Job::run(MemoryReader::new([record! { "id" => 7, "flag" => 1 }]), ok_pq).await.unwrap();
         assert!(!ok_pq_sink.get_data().is_empty());
 
         // XlsxWriter with use_styles=true + skips empty leading record; XlsxReader errors on missing sheet / index 0
@@ -2199,12 +2095,9 @@ fn test_parquet_and_xlsx_p1_validation_and_sheet_errors() {
                 use_styles: true,
             },
         );
-        Job::run(
-            MemoryReader::new([DataRecord::new(), record! { "id" => 1, "name" => "Alice" }]),
-            xlsx_w,
-        )
-        .await
-        .unwrap();
+        Job::run(MemoryReader::new([DataRecord::new(), record! { "id" => 1, "name" => "Alice" }]), xlsx_w)
+            .await
+            .unwrap();
         let xlsx_bytes = xlsx_sink.get_data();
 
         // Valid sheet
@@ -2330,9 +2223,7 @@ fn test_groupby_dedup_schema_and_transformers_p1_edge_cases() {
         assert_eq!(passed.get("id"), Some(&json!(10)));
         assert_eq!(passed.get("extra"), Some(&json!("kept")));
 
-        let reject_schema = RecordSchema::new()
-            .field("id", FieldSchema::integer())
-            .reject_unknown();
+        let reject_schema = RecordSchema::new().field("id", FieldSchema::integer()).reject_unknown();
         assert!(reject_schema.parse(record! { "id" => 1, "extra" => "boom" }).is_err());
 
         // optional() without nullable() rejects explicit null
@@ -2372,9 +2263,7 @@ fn test_groupby_dedup_schema_and_transformers_p1_edge_cases() {
             .mask("handle", MaskStrategy::Partial)
             .mask("short_email", MaskStrategy::Partial)
             .mask("ssn", MaskStrategy::Hash);
-        let pii_salted = PIIMaskingTransformer::new()
-            .with_salt("my-secret-pepper")
-            .mask("ssn", MaskStrategy::Hash);
+        let pii_salted = PIIMaskingTransformer::new().with_salt("my-secret-pepper").mask("ssn", MaskStrategy::Hash);
 
         let renamed = RenameField::new("b", "b_new").transform()(tr_rec.clone());
         let keys: Vec<&str> = renamed.keys().map(String::as_str).collect();
@@ -2524,11 +2413,7 @@ fn test_http_reader_p1_headers_relative_pagination_and_loop_guard() {
             next_page_url: Some(Arc::new(|res: &Value, _| res.get("next").and_then(|v| v.as_str()).map(String::from))),
             ..Default::default()
         };
-        let loop_res = Job::run(
-            HttpReader::with_options(format!("{}/loop", base_url), loop_opts),
-            MemoryWriter::new(),
-        )
-        .await;
+        let loop_res = Job::run(HttpReader::with_options(format!("{}/loop", base_url), loop_opts), MemoryWriter::new()).await;
         assert!(loop_res.unwrap_err().to_string().contains("pagination loop"));
     });
 }

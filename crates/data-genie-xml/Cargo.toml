@@ -1,0 +1,25 @@
+[package]
+name = "data-genie-xml"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Streaming XML reader and writer for data-genie"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/data-genie-xml"
+keywords = ["etl", "xml", "streaming", "data-genie"]
+categories = ["encoding", "asynchronous"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+]
+
+[dependencies]
+data-genie-core.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+indexmap.workspace = true
+quick-xml.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

@@ -1,0 +1,25 @@
+[package]
+name = "data-genie-xlsx"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Excel (.xlsx) reader and writer for data-genie"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/data-genie-xlsx"
+keywords = ["etl", "xlsx", "excel", "data-genie"]
+categories = ["encoding", "asynchronous"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+]
+
+[dependencies]
+data-genie-core.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+calamine.workspace = true
+rust_xlsxwriter.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

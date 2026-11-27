@@ -1,0 +1,27 @@
+[package]
+name = "data-genie-parquet"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Apache Parquet reader and writer for data-genie"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/data-genie-parquet"
+keywords = ["etl", "parquet", "arrow", "data-genie"]
+categories = ["encoding", "asynchronous"]
+include = [
+    "/src/**",
+    "/Cargo.toml",
+]
+
+[dependencies]
+data-genie-core.workspace = true
+arrow.workspace = true
+async-stream.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+indexmap.workspace = true
+parquet.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
