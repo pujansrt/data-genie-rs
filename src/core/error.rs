@@ -6,7 +6,7 @@ pub enum DataGenieError {
     Io(std::io::Error),
     Csv(csv::Error),
     Json(serde_json::Error),
-    Yaml(serde_yaml::Error),
+    Yaml(serde_yaml_ng::Error),
     Xml(String),
     Parquet(String),
     Xlsx(String),
@@ -64,8 +64,8 @@ impl From<serde_json::Error> for DataGenieError {
     }
 }
 
-impl From<serde_yaml::Error> for DataGenieError {
-    fn from(err: serde_yaml::Error) -> Self {
+impl From<serde_yaml_ng::Error> for DataGenieError {
+    fn from(err: serde_yaml_ng::Error) -> Self {
         Self::Yaml(err)
     }
 }

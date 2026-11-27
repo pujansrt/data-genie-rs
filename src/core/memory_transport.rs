@@ -127,6 +127,11 @@ impl DataSink for MemorySink {
         Ok(Box::pin(SharedVecWriter::new(Arc::clone(&self.buffer))))
     }
 
+    async fn abort(&mut self) -> Result<()> {
+        self.clear();
+        Ok(())
+    }
+
     fn name(&self) -> Cow<'_, str> {
         Cow::Borrowed(&self.identifier)
     }

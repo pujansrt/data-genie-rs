@@ -4,6 +4,7 @@ use serde_json::{Number, Value, json};
 use std::io::Cursor;
 use std::sync::Arc;
 
+use crate::core::error::DataGenieError;
 use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream};
 use crate::core::transport_utils::{SourceInput, ensure_data_source};
 use crate::transformers::SchemaValidator;
@@ -52,14 +53,25 @@ impl XlsxReader {
             Data::String(s) => Value::String(s.clone()),
             Data::Int(i) => json!(*i),
             Data::Float(f) => {
-                if f.fract() == 0.0 && *f >= (i64::MIN as f64) && *f <= (i64::MAX as f64) {
+                if f.is_finite() && f.fract() == 0.0 && *f >= (i64::MIN as f64) && *f < (i64::MAX as f64) {
                     json!(*f as i64)
                 } else {
                     Number::from_f64(*f).map(Value::Number).unwrap_or(Value::Null)
                 }
             }
             Data::Bool(b) => Value::Bool(*b),
-            Data::DateTime(dt) => Value::String(dt.to_string()),
+            Data::DateTime(dt) => {
+                if dt.is_datetime() {
+                    let (y, mo, d, h, mi, s, ms) = dt.to_ymd_hms_milli();
+                    if ms > 0 {
+                        Value::String(format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}", y, mo, d, h, mi, s, ms))
+                    } else {
+                        Value::String(format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", y, mo, d, h, mi, s))
+                    }
+                } else {
+                    Value::String(dt.to_string())
+                }
+            }
             Data::DateTimeIso(s) => Value::String(s.clone()),
             Data::DurationIso(s) => Value::String(s.clone()),
             Data::Error(e) => Value::String(format!("{:?}", e)),
@@ -78,19 +90,34 @@ impl DataReader for XlsxReader {
             let mut workbook: Xlsx<_> = open_workbook_from_rs(cursor)?;
 
             let sheet_names = workbook.sheet_names().to_vec();
-            let target_sheet = if let Some(ref name) = options.sheet_name {
+            let sheet_name = if let Some(ref name) = options.sheet_name {
                 if sheet_names.contains(name) {
-                    Some(name.clone())
+                    name.clone()
                 } else {
-                    None
+                    Err(DataGenieError::Xlsx(format!(
+                        "Worksheet '{}' not found in workbook (available: {:?})",
+                        name, sheet_names
+                    )))?;
+                    unreachable!()
                 }
             } else {
-                let idx = options.sheet_index.saturating_sub(1);
-                sheet_names.get(idx).cloned()
-            };
-
-            let Some(sheet_name) = target_sheet else {
-                return;
+                if options.sheet_index == 0 {
+                    Err(DataGenieError::Config(
+                        "XlsxReaderOptions::sheet_index is 1-based and must be >= 1".to_string(),
+                    ))?;
+                }
+                let idx = options.sheet_index - 1;
+                match sheet_names.get(idx) {
+                    Some(name) => name.clone(),
+                    None => {
+                        Err(DataGenieError::Xlsx(format!(
+                            "Worksheet index {} out of range (workbook has {} sheets)",
+                            options.sheet_index,
+                            sheet_names.len()
+                        )))?;
+                        unreachable!()
+                    }
+                }
             };
 
             let range = workbook.worksheet_range(&sheet_name)?;
@@ -101,7 +128,10 @@ impl DataReader for XlsxReader {
                 if let Some(first_row) = rows_iter.next() {
                     field_names = first_row
                         .iter()
-                        .map(|c| match Self::cell_to_value(c) {
+                        .enumerate()
+                        .map(|(idx, c)| match Self::cell_to_value(c) {
+                            Value::Null => format!("col{}", idx + 1),
+                            Value::String(s) if s.trim().is_empty() => format!("col{}", idx + 1),
                             Value::String(s) => s,
                             other => other.to_string(),
                         })

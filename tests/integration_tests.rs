@@ -1397,3 +1397,1138 @@ fn test_memory_reader_shared_collection_and_multi_writer_builder() {
         assert_eq!(csv_sink.get_text(), "name,city\nAlice,Dublin\nBob,London\n");
     });
 }
+
+#[cfg(all(feature = "s3", feature = "http"))]
+#[test]
+fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure() {
+    block_on(async {
+        use data_genie::{HttpSink, HttpSinkOptions, RecordStream, S3Sink, S3Source};
+        use object_store::path::Path as ObjectPath;
+        use object_store::{Attribute, ObjectStoreExt};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // 1. S3Sink: double close on CSVWriter/TSVWriter/FixedWidthWriter/NDJsonWriter/JsonWriter/XMLWriter
+        //    must NOT overwrite the S3 object with 0 bytes, and with_content_type() must be stored.
+        let store = S3Source::in_memory();
+        let s3_csv_sink = S3Sink::new(Arc::clone(&store), "bucket", "reports/out.csv").with_content_type("text/csv");
+        let mut csv_writer = CSVWriter::new(s3_csv_sink);
+        csv_writer.write(record! { "id" => 1, "name" => "Alice" }).await.unwrap();
+        csv_writer.close().await.unwrap();
+        // Second close must be a no-op (previously wiped S3 object to 0 bytes!)
+        csv_writer.close().await.unwrap();
+        // Write after close must fail
+        assert!(csv_writer.write(record! { "id" => 2, "name" => "Bob" }).await.is_err());
+
+        let path = ObjectPath::from("reports/out.csv");
+        let obj = store.get(&path).await.unwrap();
+        assert_eq!(
+            obj.attributes.get(&Attribute::ContentType).map(|v| v.as_ref()),
+            Some("text/csv")
+        );
+        let bytes = obj.bytes().await.unwrap();
+        assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), "id,name\n1,Alice\n");
+
+        // Verify idempotent double-close on TSV, FixedWidth, NDJson, Json, XML writers against S3Sink
+        let s3_ndjson = S3Sink::new(Arc::clone(&store), "bucket", "reports/out.ndjson").with_content_type("application/x-ndjson");
+        let mut ndjson_w = NDJsonWriter::new(s3_ndjson);
+        ndjson_w.write(record! { "k" => "v" }).await.unwrap();
+        ndjson_w.close().await.unwrap();
+        ndjson_w.close().await.unwrap();
+        assert!(ndjson_w.write(record! { "k" => "v2" }).await.is_err());
+        let nd_bytes = store.get(&ObjectPath::from("reports/out.ndjson")).await.unwrap().bytes().await.unwrap();
+        assert!(!nd_bytes.is_empty());
+
+        let s3_tsv = S3Sink::new(Arc::clone(&store), "bucket", "reports/out.tsv");
+        let mut tsv_w = TSVWriter::new(s3_tsv);
+        tsv_w.write(record! { "a" => 1 }).await.unwrap();
+        tsv_w.close().await.unwrap();
+        tsv_w.close().await.unwrap();
+        assert!(tsv_w.write(record! { "a" => 2 }).await.is_err());
+        assert_eq!(
+            String::from_utf8(store.get(&ObjectPath::from("reports/out.tsv")).await.unwrap().bytes().await.unwrap().to_vec()).unwrap(),
+            "a\n1\n"
+        );
+
+        let s3_fw = S3Sink::new(Arc::clone(&store), "bucket", "reports/out.fw");
+        let mut fw_w = FixedWidthWriter::new(s3_fw).with_field_widths([4]);
+        fw_w.write(record! { "a" => "hi" }).await.unwrap();
+        fw_w.close().await.unwrap();
+        fw_w.close().await.unwrap();
+        assert!(fw_w.write(record! { "a" => "no" }).await.is_err());
+        assert_eq!(
+            String::from_utf8(store.get(&ObjectPath::from("reports/out.fw")).await.unwrap().bytes().await.unwrap().to_vec()).unwrap(),
+            "hi  \n"
+        );
+
+        let s3_xml = S3Sink::new(Arc::clone(&store), "bucket", "reports/out.xml");
+        let mut xml_w = XMLWriter::new(s3_xml);
+        xml_w.write(record! { "a" => "1" }).await.unwrap();
+        xml_w.close().await.unwrap();
+        xml_w.close().await.unwrap();
+        assert!(xml_w.write(record! { "a" => "2" }).await.is_err());
+        assert!(
+            String::from_utf8(store.get(&ObjectPath::from("reports/out.xml")).await.unwrap().bytes().await.unwrap().to_vec())
+                .unwrap()
+                .contains("<a>1</a>")
+        );
+
+        // 2. Failed Job must NOT upload partial/truncated payload to S3!
+        struct MidStreamFailReader;
+        impl DataReader for MidStreamFailReader {
+            fn read(&mut self) -> RecordStream {
+                Box::pin(async_stream::try_stream! {
+                    yield Some(record! { "id" => 1, "name" => "partial" });
+                    Err(DataGenieError::Other("mid-stream boom".to_string()))?;
+                })
+            }
+        }
+
+        let failed_s3 = S3Sink::new(Arc::clone(&store), "bucket", "reports/should_not_exist.json");
+        let err = Job::run(MidStreamFailReader, JsonWriter::new(failed_s3)).await;
+        assert!(err.is_err());
+        assert!(
+            store.get(&ObjectPath::from("reports/should_not_exist.json")).await.is_err(),
+            "Failed job must not upload partial data to S3"
+        );
+
+        // 3. HttpSink: no duplicate Content-Type, double close sends only 1 request, failed job sends 0 requests
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let recorded_headers = Arc::new(Mutex::new(Vec::<String>::new()));
+        let req_count_srv = Arc::clone(&request_count);
+        let headers_srv = Arc::clone(&recorded_headers);
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let rc = Arc::clone(&req_count_srv);
+                let hs = Arc::clone(&headers_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let raw = String::from_utf8_lossy(&buf[..n]).to_string();
+                    rc.fetch_add(1, Ordering::SeqCst);
+                    hs.lock().unwrap().push(raw);
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        .await;
+                });
+            }
+        });
+
+        let upload_url = format!("http://{}/upload", addr);
+
+        // Failed job sends 0 HTTP requests
+        let failed_http = HttpSink::new(&upload_url);
+        assert!(Job::run(MidStreamFailReader, NDJsonWriter::new(failed_http)).await.is_err());
+        assert_eq!(request_count.load(Ordering::SeqCst), 0);
+
+        // Successful upload with custom Content-Type + double close sends exactly 1 request and 1 Content-Type header
+        let http_sink = HttpSink::with_options(
+            &upload_url,
+            HttpSinkOptions::default().with_header("Content-Type", "application/json"),
+        );
+        let mut json_http_w = JsonWriter::new(http_sink);
+        json_http_w.write(record! { "ok" => true }).await.unwrap();
+        json_http_w.close().await.unwrap();
+        json_http_w.close().await.unwrap();
+
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        let raw_req = &recorded_headers.lock().unwrap()[0];
+        let ct_header_count = raw_req
+            .lines()
+            .filter(|line| line.to_ascii_lowercase().starts_with("content-type:"))
+            .count();
+        assert_eq!(ct_header_count, 1, "Expected single Content-Type header, got:\n{}", raw_req);
+        assert!(raw_req.to_ascii_lowercase().contains("content-type: application/json"));
+    });
+}
+
+#[test]
+fn test_parallel_writer_sync_construction_error_propagation_and_cleanup() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // 1. Constructing ParallelWriter::new & from_handler OUTSIDE any Tokio runtime + Job::run_blocking
+    let shared_out = MemoryWriter::new();
+    let pw = ParallelWriter::new(ParallelWriterOptions { concurrency: 2, batch_size: 2 }, {
+        let out = shared_out.clone();
+        move |_idx| out.clone()
+    });
+    let recs = vec![
+        record! { "id" => 1 },
+        record! { "id" => 2 },
+        record! { "id" => 3 },
+        record! { "id" => 4 },
+    ];
+    Job::run_blocking(MemoryReader::new(recs.clone()), pw).unwrap();
+    assert_eq!(shared_out.len(), 4);
+
+    let handler_total = Arc::new(AtomicUsize::new(0));
+    let pw_handler = ParallelWriter::from_handler(ParallelWriterOptions { concurrency: 2, batch_size: 2 }, {
+        let total = Arc::clone(&handler_total);
+        move |chunk| {
+            total.fetch_add(chunk.len(), Ordering::SeqCst);
+            Ok(())
+        }
+    });
+    Job::run_blocking(MemoryReader::new(recs), pw_handler).unwrap();
+    assert_eq!(handler_total.load(Ordering::SeqCst), 4);
+
+    // 2. Worker error must surface the real error (not "channel closed") and abort worker writers cleanly
+    block_on(async {
+        struct FailOnSecondWrite {
+            count: usize,
+            aborted: Arc<AtomicBool>,
+            closed: Arc<AtomicBool>,
+        }
+        #[async_trait]
+        impl DataWriter for FailOnSecondWrite {
+            async fn write(&mut self, _record: DataRecord) -> Result<()> {
+                self.count += 1;
+                if self.count == 1 {
+                    return Err(DataGenieError::Other("specific worker db timeout".to_string()));
+                }
+                Ok(())
+            }
+            async fn close(&mut self) -> Result<()> {
+                self.closed.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+            async fn abort(&mut self) -> Result<()> {
+                self.aborted.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let aborted_flags = Arc::new(Mutex::new(Vec::<Arc<AtomicBool>>::new()));
+        let closed_flags = Arc::new(Mutex::new(Vec::<Arc<AtomicBool>>::new()));
+
+        let pw_fail = ParallelWriter::new(ParallelWriterOptions { concurrency: 2, batch_size: 1 }, {
+            let af = Arc::clone(&aborted_flags);
+            let cf = Arc::clone(&closed_flags);
+            move |_| {
+                let a = Arc::new(AtomicBool::new(false));
+                let c = Arc::new(AtomicBool::new(false));
+                af.lock().unwrap().push(Arc::clone(&a));
+                cf.lock().unwrap().push(Arc::clone(&c));
+                FailOnSecondWrite {
+                    count: 0,
+                    aborted: a,
+                    closed: c,
+                }
+            }
+        });
+
+        let many: Vec<DataRecord> = (0..12).map(|i| record! { "i" => i }).collect();
+        let err = Job::run(MemoryReader::new(many), pw_fail).await.unwrap_err();
+        assert!(
+            err.to_string().contains("specific worker db timeout"),
+            "Expected real worker error, got: {}",
+            err
+        );
+        assert!(
+            aborted_flags.lock().unwrap().iter().any(|f| f.load(Ordering::SeqCst)),
+            "Failing worker should have called abort()"
+        );
+
+        // 3. Write after close rejected, double close idempotent, 0-record close works
+        let mut pw_empty = ParallelWriter::new(ParallelWriterOptions { concurrency: 2, batch_size: 2 }, |_| MemoryWriter::new());
+        pw_empty.close().await.unwrap();
+        pw_empty.close().await.unwrap();
+        assert!(pw_empty.write(record! { "id" => 1 }).await.is_err());
+    });
+}
+
+#[test]
+fn test_retrying_writer_with_batch_callback_close_retry_and_half_open_circuit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    block_on(async {
+        // 1. RetryingWriter + BatchCallbackWriter::new_async: transient failure on batch flush
+        //    must NOT drop records 1..N-1 and must NOT duplicate record N.
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let delivered = Arc::new(Mutex::new(Vec::<DataRecord>::new()));
+
+        let batch_writer = BatchCallbackWriter::new_async(3, {
+            let attempts = Arc::clone(&attempts);
+            let delivered = Arc::clone(&delivered);
+            move |batch: Vec<DataRecord>| {
+                let attempts = Arc::clone(&attempts);
+                let delivered = Arc::clone(&delivered);
+                async move {
+                    let n = attempts.fetch_add(1, Ordering::SeqCst);
+                    // Fail first attempt of batch #1 (during write) and first attempt of batch #2 (during close)
+                    if n == 0 || n == 2 {
+                        return Err(DataGenieError::Other("transient 503".to_string()));
+                    }
+                    delivered.lock().unwrap().extend(batch);
+                    Ok(())
+                }
+            }
+        });
+
+        let retrying = RetryingWriter::with_options(
+            batch_writer,
+            RetryOptions {
+                max_retries: 2,
+                initial_delay_ms: 1,
+                backoff_factor: 2,
+                circuit_breaker_threshold: 5,
+                circuit_reset_timeout_ms: 1000,
+            },
+        );
+
+        let input: Vec<DataRecord> = (1..=5).map(|i| record! { "id" => i }).collect();
+        Job::run(MemoryReader::new(input), retrying).await.unwrap();
+
+        let ids: Vec<i64> = delivered
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.get("id").unwrap().as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![1, 2, 3, 4, 5], "No dropped or duplicated records across batch retries");
+
+        // 2. Half-open circuit breaker must immediately re-open on a single failed probe
+        struct AlwaysFailWriter;
+        #[async_trait]
+        impl DataWriter for AlwaysFailWriter {
+            async fn write(&mut self, _record: DataRecord) -> Result<()> {
+                Err(DataGenieError::Other("still down".to_string()))
+            }
+            async fn close(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut rw = RetryingWriter::with_options(
+            AlwaysFailWriter,
+            RetryOptions {
+                max_retries: 0,
+                initial_delay_ms: 1,
+                backoff_factor: 2,
+                circuit_breaker_threshold: 2,
+                circuit_reset_timeout_ms: 20,
+            },
+        );
+        // 2 failures trip circuit open
+        assert!(rw.write(record! { "id" => 1 }).await.is_err());
+        assert!(rw.write(record! { "id" => 2 }).await.is_err());
+        assert!(matches!(rw.write(record! { "id" => 3 }).await.unwrap_err(), DataGenieError::CircuitBreaker(_)));
+
+        // Wait for reset -> half-open probe fails -> circuit must IMMEDIATELY re-open on next call
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let probe_err = rw.write(record! { "id" => 4 }).await.unwrap_err();
+        assert!(!matches!(probe_err, DataGenieError::CircuitBreaker(_)));
+        let immediate_next = rw.write(record! { "id" => 5 }).await.unwrap_err();
+        assert!(
+            matches!(immediate_next, DataGenieError::CircuitBreaker(_)),
+            "Failed half-open probe must immediately re-open circuit, got: {:?}",
+            immediate_next
+        );
+    });
+}
+
+#[test]
+fn test_multi_writer_closes_and_aborts_all_children_on_error() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    block_on(async {
+        struct FailOnCloseWriter {
+            aborted: Arc<AtomicBool>,
+        }
+        #[async_trait]
+        impl DataWriter for FailOnCloseWriter {
+            async fn write(&mut self, _record: DataRecord) -> Result<()> {
+                Ok(())
+            }
+            async fn close(&mut self) -> Result<()> {
+                Err(DataGenieError::Other("writer 1 close failed".to_string()))
+            }
+            async fn abort(&mut self) -> Result<()> {
+                self.aborted.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        // Even though writer 1 fails in close(), writer 2 (JsonWriter) MUST still be closed and flushed
+        let sink2 = MemorySink::new();
+        let mut multi = MultiWriter::from_writer(FailOnCloseWriter {
+            aborted: Arc::new(AtomicBool::new(false)),
+        })
+        .add(JsonWriter::new(sink2.clone()));
+
+        multi.write(record! { "id" => 42 }).await.unwrap();
+        let err = multi.close().await.unwrap_err();
+        assert!(err.to_string().contains("writer 1 close failed"));
+        let parsed: Vec<DataRecord> = serde_json::from_str(&sink2.get_text()).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].get("id"), Some(&json!(42)));
+
+        // Abort propagates to every child writer
+        let a1 = Arc::new(AtomicBool::new(false));
+        let a2 = Arc::new(AtomicBool::new(false));
+        let mut multi_abort = MultiWriter::from_writer(FailOnCloseWriter { aborted: Arc::clone(&a1) })
+            .add(FailOnCloseWriter { aborted: Arc::clone(&a2) });
+        multi_abort.abort().await.unwrap();
+        assert!(a1.load(Ordering::SeqCst));
+        assert!(a2.load(Ordering::SeqCst));
+    });
+}
+
+#[test]
+fn test_blocking_apis_work_inside_current_thread_tokio_runtime() {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        // Calling Job::run_blocking, Job::execute_blocking, and SharedWriter::close_dlq_blocking
+        // inside a current_thread runtime must NOT panic with block_in_place error.
+        let out = MemoryWriter::new();
+        let metrics = Job::run_blocking(MemoryReader::new([record! { "x" => 1 }]), out.clone()).unwrap();
+        assert_eq!(metrics.record_count, 1);
+        assert_eq!(out.len(), 1);
+
+        let mut job = Job::new(MemoryReader::new([record! { "x" => 2 }]), MemoryWriter::new());
+        let metrics2 = job.execute_blocking().unwrap();
+        assert_eq!(metrics2.record_count, 1);
+
+        let dlq = SharedWriter::new(MemoryWriter::new());
+        dlq.close_dlq_blocking().unwrap();
+        assert!(dlq.is_closed());
+    });
+}
+
+#[test]
+fn test_dlq_chained_ownership_distinct_dlqs_and_upstream_error_propagation() {
+    use data_genie::RecordStream;
+
+    block_on(async {
+        // 1. ValidatingReader -> GroupByReader -> SchemaValidatingReader sharing ONE JsonWriter DLQ:
+        //    Inner ValidatingReader must NOT prematurely close the DLQ before SchemaValidatingReader writes!
+        let dlq_sink = MemorySink::new();
+        let input = vec![
+            record! { "dept" => "Eng", "amount" => 100 },
+            record! { "dept" => "Eng", "amount" => -50 }, // rejected by inner ValidatingReader
+            record! { "dept" => "Sales", "amount" => 5 }, // aggregated sum=5 -> rejected by outer SchemaValidatingReader (min 50)
+        ];
+
+        let inner_rule = FieldValidator::new("amount")
+            .add_rule(|v| v.as_i64().is_some_and(|n| n > 0), "amount must be positive")
+            .create_record_validation_rule();
+        let inner = ValidatingReader::new(MemoryReader::new(input)).add_rule(inner_rule);
+        let grouped = GroupByReader::new(inner, "dept").sum("amount", "total");
+        let outer_schema = RecordSchema::new().field("total", FieldSchema::number().min(50.0));
+        let outer = SchemaValidatingReader::new(grouped, outer_schema).with_dlq(JsonWriter::new(dlq_sink.clone()));
+
+        let out = MemoryWriter::new();
+        let metrics = Job::run(outer, out.clone()).await.unwrap();
+        assert_eq!(metrics.record_count, 1); // Only Eng (total=100) survives
+        assert_eq!(metrics.dlq_record_count, 2); // 1 from inner + 1 from outer
+        assert_eq!(metrics.rejected_record_count, 2);
+
+        let dlq_records: Vec<DataRecord> = serde_json::from_str(&dlq_sink.get_text()).unwrap();
+        assert_eq!(dlq_records.len(), 2);
+
+        // 2. Distinct DLQs on inner and outer stages: outer must NOT overwrite inner's DLQ,
+        //    and dlq_record_count must SUM both stages (not take max).
+        let dlq_inner = MemoryWriter::new();
+        let dlq_outer = MemoryWriter::new();
+        let distinct_input = vec![
+            record! { "id" => 1, "score" => 90 },
+            record! { "id" => -1, "score" => 90 }, // fails inner
+            record! { "id" => 2, "score" => 10 },  // passes inner, fails outer
+            record! { "id" => 3, "score" => 20 },  // passes inner, fails outer
+        ];
+        let inner_v = ValidatingReader::new(MemoryReader::new(distinct_input))
+            .add_rule(
+                FieldValidator::new("id")
+                    .add_rule(|v| v.as_i64().is_some_and(|n| n > 0), "id > 0")
+                    .create_record_validation_rule(),
+            )
+            .with_dlq(dlq_inner.clone());
+        let outer_v = SchemaValidatingReader::new(
+            inner_v,
+            RecordSchema::new().field("score", FieldSchema::integer().min(50.0)),
+        )
+        .with_dlq(dlq_outer.clone());
+
+        let distinct_out = MemoryWriter::new();
+        let distinct_metrics = Job::run(outer_v, distinct_out.clone()).await.unwrap();
+        assert_eq!(distinct_metrics.record_count, 1);
+        assert_eq!(dlq_inner.len(), 1);
+        assert_eq!(dlq_outer.len(), 2);
+        assert_eq!(distinct_metrics.dlq_record_count, 3);
+        assert_eq!(distinct_metrics.rejected_record_count, 3);
+
+        // 3. ValidatingReader without DLQ drops invalid records, counts rejected_record_count, and populates ValidationMessage.record
+        let no_dlq_input = vec![record! { "id" => 1 }, record! { "id" => -5 }];
+        let vr = ValidatingReader::new(MemoryReader::new(no_dlq_input)).add_rule(
+            FieldValidator::new("id")
+                .add_rule(|v| v.as_i64().is_some_and(|n| n > 0), "id > 0")
+                .create_record_validation_rule(),
+        );
+        let no_dlq_out = MemoryWriter::new();
+        let mut job = Job::new(vr, no_dlq_out.clone());
+        let no_dlq_metrics = job.execute().await.unwrap();
+        assert_eq!(no_dlq_out.len(), 1);
+        assert_eq!(no_dlq_metrics.record_count, 1);
+        assert_eq!(no_dlq_metrics.dlq_record_count, 0);
+        assert_eq!(no_dlq_metrics.rejected_record_count, 1);
+
+        // Verify FieldValidator populates ValidationMessage.record
+        let fv_rule = FieldValidator::new("id")
+            .add_rule(|v| v.as_i64().is_some_and(|n| n > 0), "id > 0")
+            .create_record_validation_rule();
+        let mut msgs = Vec::new();
+        assert!(!fv_rule(&record! { "id" => -5, "tag" => "bad" }, &mut msgs));
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].record.get("tag"), Some(&json!("bad")));
+
+        // 4. Fatal upstream error is propagated (not silently truncated as Ok) and still closes DLQ
+        struct BoomReader;
+        impl DataReader for BoomReader {
+            fn read(&mut self) -> RecordStream {
+                Box::pin(async_stream::try_stream! {
+                    yield Some(record! { "id" => -1 });
+                    Err(DataGenieError::Other("fatal io disconnect".to_string()))?;
+                })
+            }
+        }
+        let boom_dlq_sink = MemorySink::new();
+        let boom_vr = ValidatingReader::new(BoomReader)
+            .add_rule(
+                FieldValidator::new("id")
+                    .add_rule(|v| v.as_i64().is_some_and(|n| n > 0), "id > 0")
+                    .create_record_validation_rule(),
+            )
+            .with_dlq(JsonWriter::new(boom_dlq_sink.clone()));
+        let boom_res = Job::run(boom_vr, MemoryWriter::new()).await;
+        assert!(boom_res.is_err());
+        // DLQ JsonWriter was properly closed on error so already-written DLQ records form valid JSON
+        let boom_dlq_records: Vec<DataRecord> = serde_json::from_str(&boom_dlq_sink.get_text()).unwrap();
+        assert_eq!(boom_dlq_records.len(), 1);
+    });
+}
+
+#[cfg(all(feature = "parquet", feature = "xlsx"))]
+#[test]
+fn test_parquet_and_xlsx_idempotent_close_and_abort() {
+    block_on(async {
+        use data_genie::{ParquetFieldSchema, ParquetSchema, ParquetWriter, XlsxWriter};
+
+        let schema = ParquetSchema::new()
+            .add_field("id", ParquetFieldSchema::int64())
+            .add_field("name", ParquetFieldSchema::utf8());
+
+        // ParquetWriter: double close idempotent, write-after-close rejected
+        let pq_sink = MemorySink::new();
+        let mut pq = ParquetWriter::with_schema(&pq_sink, schema.clone());
+        pq.write(record! { "id" => 1, "name" => "Alice" }).await.unwrap();
+        pq.close().await.unwrap();
+        let pq_len = pq_sink.get_data().len();
+        assert!(pq_len > 0);
+        pq.close().await.unwrap();
+        assert_eq!(pq_sink.get_data().len(), pq_len);
+        assert!(pq.write(record! { "id" => 2, "name" => "Bob" }).await.is_err());
+
+        // ParquetWriter abort discards without writing
+        let pq_abort_sink = MemorySink::new();
+        let mut pq_abort = ParquetWriter::with_schema(&pq_abort_sink, schema);
+        pq_abort.write(record! { "id" => 1, "name" => "Alice" }).await.unwrap();
+        pq_abort.abort().await.unwrap();
+        assert!(pq_abort_sink.get_data().is_empty());
+
+        // XlsxWriter: double close idempotent, write-after-close rejected
+        let xlsx_sink = MemorySink::new();
+        let mut xlsx = XlsxWriter::new(&xlsx_sink);
+        xlsx.write(record! { "id" => 1, "name" => "Alice" }).await.unwrap();
+        xlsx.close().await.unwrap();
+        let xlsx_len = xlsx_sink.get_data().len();
+        assert!(xlsx_len > 0);
+        xlsx.close().await.unwrap();
+        assert_eq!(xlsx_sink.get_data().len(), xlsx_len);
+        assert!(xlsx.write(record! { "id" => 2, "name" => "Bob" }).await.is_err());
+
+        // XlsxWriter abort discards without writing
+        let xlsx_abort_sink = MemorySink::new();
+        let mut xlsx_abort = XlsxWriter::new(&xlsx_abort_sink);
+        xlsx_abort.write(record! { "id" => 1, "name" => "Alice" }).await.unwrap();
+        xlsx_abort.abort().await.unwrap();
+        assert!(xlsx_abort_sink.get_data().is_empty());
+    });
+}
+
+#[test]
+fn test_csv_tsv_ndjson_json_fixed_width_p1_edge_cases() {
+    block_on(async {
+        // 1. CSV: UTF-8 BOM + RFC 4180 multi-line quoted field + escaped quotes + non-ASCII delimiter rejected
+        let multiline_csv = "\u{FEFF}id,note\n1,\"hello\n\"\"world\"\"\"\n2,plain\n";
+        let out_csv = MemoryWriter::new();
+        Job::run(CSVReader::new(MemorySource::new(multiline_csv)), out_csv.clone()).await.unwrap();
+        let rows = out_csv.get_records();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("id"), Some(&json!("1")));
+        assert_eq!(rows[0].get("note"), Some(&json!("hello\n\"world\"")));
+        assert_eq!(rows[1].get("note"), Some(&json!("plain")));
+
+        // Non-ASCII delimiter returns Config error
+        let bad_delim_res = Job::run(
+            CSVReader::new(MemorySource::new("a│b\n1│2\n")).set_field_separator('│'),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(matches!(bad_delim_res, Err(DataGenieError::Config(_))));
+
+        // Invalid UTF-8 line in CSV routed to DLQ without aborting subsequent valid lines
+        let mut bad_utf8_csv = b"id,name\n1,Alice\n".to_vec();
+        bad_utf8_csv.extend_from_slice(&[0xFF, 0xFE, b',', b'x', b'\n']);
+        bad_utf8_csv.extend_from_slice(b"2,Bob\n");
+        let csv_dlq = MemoryWriter::new();
+        let csv_utf8_out = MemoryWriter::new();
+        Job::run(
+            CSVReader::new(MemorySource::new(bad_utf8_csv)).with_dlq(csv_dlq.clone()),
+            csv_utf8_out.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(csv_utf8_out.len(), 2);
+        assert_eq!(csv_dlq.len(), 1);
+        assert_eq!(csv_dlq.get_records()[0].get("_type"), Some(&json!("parse_error")));
+
+        // Headerless CSV column-mismatch DLQ populates _raw (not empty {})
+        let hdrless_dlq = MemoryWriter::new();
+        let hdrless_out = MemoryWriter::new();
+        Job::run(
+            CSVReader::new(MemorySource::new("a,b\nonly_one\nc,d\n"))
+                .set_field_names_in_first_row(false)
+                .with_dlq(hdrless_dlq.clone()),
+            hdrless_out.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(hdrless_out.len(), 2);
+        assert_eq!(hdrless_dlq.get_records()[0].get("_raw"), Some(&json!({"0": "only_one"})));
+
+        // 2. TSV: literal quotes don't corrupt columns, all-empty tab row preserved, TSVWriter sanitizes \t/\n
+        let tsv_raw = "\u{FEFF}item\tprice\n15\" monitor\t299\n\t\n";
+        let tsv_out = MemoryWriter::new();
+        Job::run(TSVReader::new(MemorySource::new(tsv_raw)), tsv_out.clone()).await.unwrap();
+        let tsv_rows = tsv_out.get_records();
+        assert_eq!(tsv_rows.len(), 2);
+        assert_eq!(tsv_rows[0].get("item"), Some(&json!("15\" monitor")));
+        assert_eq!(tsv_rows[0].get("price"), Some(&json!("299")));
+        assert_eq!(tsv_rows[1].get("item"), Some(&json!("")));
+        assert_eq!(tsv_rows[1].get("price"), Some(&json!("")));
+
+        let tsv_sink = MemorySink::new();
+        Job::run(
+            MemoryReader::new([record! { "a" => "x\ty\nz", "b" => "ok" }]),
+            TSVWriter::new(&tsv_sink),
+        )
+        .await
+        .unwrap();
+        assert_eq!(tsv_sink.get_text(), "a\tb\nx y z\tok\n");
+
+        // 3. NDJSON: BOM stripped, bad UTF-8 line DLQ'd without aborting, validation_error _type & _raw
+        let mut ndjson_bytes = b"\xEF\xBB\xBF{\"id\":1}\n".to_vec();
+        ndjson_bytes.extend_from_slice(&[0xFF, 0xFE, b'\n']);
+        ndjson_bytes.extend_from_slice(b"{\"id\":\"bad\"}\n{\"id\":2}\n");
+        let nd_dlq = MemoryWriter::new();
+        let nd_out = MemoryWriter::new();
+        let nd_schema = RecordSchema::new().field("id", FieldSchema::integer());
+        Job::run(
+            NDJsonReader::new(MemorySource::new(ndjson_bytes))
+                .with_schema(nd_schema)
+                .with_dlq(nd_dlq.clone()),
+            nd_out.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(nd_out.len(), 2);
+        let nd_dlq_recs = nd_dlq.get_records();
+        assert_eq!(nd_dlq_recs.len(), 2);
+        assert_eq!(nd_dlq_recs[0].get("_type"), Some(&json!("parse_error")));
+        assert_eq!(nd_dlq_recs[1].get("_type"), Some(&json!("validation_error")));
+        assert!(nd_dlq_recs[1].contains_key("_raw"));
+
+        // 4. JSON: BOM stripped, empty file -> 0 records, non-object element DLQ'd without losing valid elements
+        let empty_json_out = MemoryWriter::new();
+        Job::run(JsonReader::new(MemorySource::new("\u{FEFF}   \n")), empty_json_out.clone())
+            .await
+            .unwrap();
+        assert_eq!(empty_json_out.len(), 0);
+
+        let mixed_json_dlq = MemoryWriter::new();
+        let mixed_json_out = MemoryWriter::new();
+        Job::run(
+            JsonReader::new(MemorySource::new("\u{FEFF}[{\"id\":1}, \"oops\", {\"id\":2}]")).with_dlq(mixed_json_dlq.clone()),
+            mixed_json_out.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(mixed_json_out.len(), 2);
+        assert_eq!(mixed_json_dlq.len(), 1);
+        assert_eq!(mixed_json_dlq.get_records()[0].get("_raw"), Some(&json!("oops")));
+
+        // 5. FixedWidth: BOM stripped, all-spaces row preserved, mismatched names/widths rejected, writer sanitizes newlines
+        let fw_sink = MemorySink::new();
+        Job::run(
+            MemoryReader::new([record! { "a" => "x\ny", "b" => "12" }]),
+            FixedWidthWriter::new(&fw_sink).with_field_widths([4, 3]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fw_sink.get_text(), "x y 12 \n");
+
+        let fw_all_spaces = "\u{FEFF}a   b  \n       \n1   2  \n";
+        let fw_out = MemoryWriter::new();
+        Job::run(
+            FixedWidthReader::new(MemorySource::new(fw_all_spaces))
+                .set_field_widths([4, 3])
+                .set_field_names_in_first_row(true),
+            fw_out.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fw_out.len(), 2);
+        assert_eq!(fw_out.get_records()[0].get("a"), Some(&json!("")));
+        assert_eq!(fw_out.get_records()[1].get("a"), Some(&json!("1")));
+
+        let fw_mismatch = Job::run(
+            FixedWidthReader::new(MemorySource::new("abcd\n"))
+                .set_field_widths([2, 2])
+                .set_field_names(["only_one"]),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(matches!(fw_mismatch, Err(DataGenieError::Config(_))));
+    });
+}
+
+#[test]
+fn test_xml_p1_validation_control_chars_empty_elements_and_namespaces() {
+    block_on(async {
+        // XMLWriter rejects invalid tag/field names and strips illegal control chars
+        let bad_key_sink = MemorySink::new();
+        let mut bad_xml = XMLWriter::new(&bad_key_sink);
+        assert!(bad_xml.write(record! { "bad key" => "v" }).await.is_err());
+
+        let bad_root_sink = MemorySink::new();
+        let mut bad_root = XMLWriter::with_options(
+            &bad_root_sink,
+            XMLWriterOptions {
+                root_tag: "123bad".to_string(),
+                record_tag: "item".to_string(),
+                add_declaration: false,
+            },
+        );
+        assert!(bad_root.write(record! { "ok" => "v" }).await.is_err());
+
+        let ctrl_sink = MemorySink::new();
+        Job::run(
+            MemoryReader::new([record! { "msg" => "a\u{0000}\u{0007}b<c>" }]),
+            XMLWriter::new(&ctrl_sink),
+        )
+        .await
+        .unwrap();
+        let xml_text = ctrl_sink.get_text();
+        assert!(xml_text.contains("<msg>ab&lt;c&gt;</msg>"));
+        assert!(!xml_text.contains('\0'));
+
+        // XMLReader: empty elements become "" (not {}), xmlns skipped with strip_namespaces, prefixed record_path matched
+        let xml_in = r#"<ns:root xmlns:ns="http://example.com/ns">
+          <ns:item id="1"><ns:empty/><ns:blank></ns:blank><ns:name>Alice</ns:name></ns:item>
+        </ns:root>"#;
+        let opts = XMLReaderOptions::new("ns:root/ns:item").with_strip_namespaces(true);
+        let out = MemoryWriter::new();
+        Job::run(XMLReader::new(MemorySource::new(xml_in), opts), out.clone()).await.unwrap();
+        let recs = out.get_records();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].get("empty"), Some(&json!("")));
+        assert_eq!(recs[0].get("blank"), Some(&json!("")));
+        assert_eq!(recs[0].get("name"), Some(&json!("Alice")));
+        assert!(!recs[0].contains_key("@ns"));
+
+        // Malformed entity unescape fails when ignore_errors == false
+        let bad_entity = "<root><item><name>&unknown_entity;</name></item></root>";
+        let err_res = Job::run(
+            XMLReader::new(MemorySource::new(bad_entity), XMLReaderOptions::new("root/item")),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(err_res.is_err());
+    });
+}
+
+#[cfg(all(feature = "parquet", feature = "xlsx"))]
+#[test]
+fn test_parquet_and_xlsx_p1_validation_and_sheet_errors() {
+    block_on(async {
+        use data_genie::{ParquetFieldSchema, ParquetSchema, ParquetWriter, XlsxReader, XlsxReaderOptions, XlsxWriter, XlsxWriterOptions};
+
+        // ParquetWriter rejects missing required fields and invalid coercions instead of writing 0/false
+        let schema = ParquetSchema::new()
+            .add_field("id", ParquetFieldSchema::int64())
+            .add_field("flag", ParquetFieldSchema::boolean())
+            .add_field("note", ParquetFieldSchema::utf8().optional());
+
+        let bad_pq_sink = MemorySink::new();
+        let bad_pq = ParquetWriter::with_schema(&bad_pq_sink, schema.clone());
+        let err1 = Job::run(MemoryReader::new([record! { "id" => "not_int", "flag" => true }]), bad_pq).await;
+        assert!(matches!(err1, Err(DataGenieError::Validation(_))));
+
+        let missing_pq = ParquetWriter::with_schema(MemorySink::new(), schema.clone());
+        let err2 = Job::run(MemoryReader::new([record! { "flag" => true }]), missing_pq).await;
+        assert!(matches!(err2, Err(DataGenieError::Validation(_))));
+
+        // Numeric 1/0 coerced for Boolean + optional null accepted
+        let ok_pq_sink = MemorySink::new();
+        let ok_pq = ParquetWriter::with_schema(&ok_pq_sink, schema);
+        Job::run(MemoryReader::new([record! { "id" => 7, "flag" => 1 }]), ok_pq)
+            .await
+            .unwrap();
+        assert!(!ok_pq_sink.get_data().is_empty());
+
+        // XlsxWriter with use_styles=true + skips empty leading record; XlsxReader errors on missing sheet / index 0
+        let xlsx_sink = MemorySink::new();
+        let xlsx_w = XlsxWriter::with_options(
+            &xlsx_sink,
+            XlsxWriterOptions {
+                sheet_name: "Data".to_string(),
+                use_styles: true,
+            },
+        );
+        Job::run(
+            MemoryReader::new([DataRecord::new(), record! { "id" => 1, "name" => "Alice" }]),
+            xlsx_w,
+        )
+        .await
+        .unwrap();
+        let xlsx_bytes = xlsx_sink.get_data();
+
+        // Valid sheet
+        let ok_xlsx_out = MemoryWriter::new();
+        Job::run(
+            XlsxReader::with_options(
+                MemorySource::new(xlsx_bytes.clone()),
+                XlsxReaderOptions {
+                    sheet_name: Some("Data".to_string()),
+                    ..Default::default()
+                },
+            ),
+            ok_xlsx_out.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok_xlsx_out.len(), 1);
+        assert_eq!(ok_xlsx_out.get_records()[0].get("name"), Some(&json!("Alice")));
+
+        // Missing sheet name returns error instead of silent 0 records
+        let missing_sheet_res = Job::run(
+            XlsxReader::with_options(
+                MemorySource::new(xlsx_bytes.clone()),
+                XlsxReaderOptions {
+                    sheet_name: Some("DoesNotExist".to_string()),
+                    ..Default::default()
+                },
+            ),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(matches!(missing_sheet_res, Err(DataGenieError::Xlsx(_))));
+
+        // sheet_index == 0 returns Config error
+        let zero_idx_res = Job::run(
+            XlsxReader::with_options(
+                MemorySource::new(xlsx_bytes),
+                XlsxReaderOptions {
+                    sheet_index: 0,
+                    ..Default::default()
+                },
+            ),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(matches!(zero_idx_res, Err(DataGenieError::Config(_))));
+    });
+}
+
+#[test]
+fn test_groupby_dedup_schema_and_transformers_p1_edge_cases() {
+    use data_genie::{MemoryKeyStore, try_pattern_match};
+
+    block_on(async {
+        // 1. GroupByReader ignores nulls in Min/Max/Avg and preserves distinct key types (1 vs "1")
+        let grp_input = vec![
+            record! { "k" => 1, "v" => 10 },
+            record! { "k" => 1, "v" => 20 },
+            record! { "k" => 1, "v" => Value::Null },
+            record! { "k" => "1", "v" => Value::Null },
+        ];
+        let grp_out = MemoryWriter::new();
+        let grp = GroupByReader::new(MemoryReader::new(grp_input), "k")
+            .count("cnt")
+            .min("v", "min_v")
+            .max("v", "max_v")
+            .avg("v", "avg_v");
+        Job::run(grp, grp_out.clone()).await.unwrap();
+        let grp_rows = grp_out.get_records();
+        assert_eq!(grp_rows.len(), 2, "1 and \"1\" must stay separate groups");
+        assert_eq!(grp_rows[0].get("cnt"), Some(&json!(3)));
+        assert_eq!(grp_rows[0].get("min_v"), Some(&json!(10)));
+        assert_eq!(grp_rows[0].get("max_v"), Some(&json!(20)));
+        assert_eq!(grp_rows[0].get("avg_v"), Some(&json!(15)));
+        assert_eq!(grp_rows[1].get("min_v"), Some(&Value::Null));
+        assert_eq!(grp_rows[1].get("avg_v"), Some(&Value::Null));
+
+        // 2. RemoveDuplicatesReader: no collisions across missing/null/"", 1/"1", embedded \0; max_keys enforced on reused store
+        let dedup_input = vec![
+            record! { "a" => 1, "b" => "x" },
+            record! { "a" => "1", "b" => "x" },
+            record! { "a" => Value::Null, "b" => "" },
+            record! { "b" => "" }, // missing "a" != null "a"
+            record! { "a" => "x\0y", "b" => "z" },
+            record! { "a" => "x", "b" => "y\0z" },
+        ];
+        let dedup_out = MemoryWriter::new();
+        Job::run(RemoveDuplicatesReader::new(MemoryReader::new(dedup_input), ["a", "b"]), dedup_out.clone())
+            .await
+            .unwrap();
+        assert_eq!(dedup_out.len(), 6);
+
+        let shared_store = MemoryKeyStore::new();
+        Job::run(
+            RemoveDuplicatesReader::new(MemoryReader::new([record! { "id" => 1 }, record! { "id" => 2 }]), ["id"])
+                .set_key_store(shared_store.clone())
+                .set_max_keys(2),
+            MemoryWriter::new(),
+        )
+        .await
+        .unwrap();
+        // Second run with same MemoryKeyStore must enforce max_keys across calls
+        let limit_err = Job::run(
+            RemoveDuplicatesReader::new(MemoryReader::new([record! { "id" => 3 }]), ["id"])
+                .set_key_store(shared_store)
+                .set_max_keys(2),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(matches!(limit_err, Err(DataGenieError::MemoryLimit(_))));
+
+        // Empty key fields returns Config error
+        let empty_keys_err = Job::run(
+            RemoveDuplicatesReader::new(MemoryReader::new([record! { "id" => 1 }]), Vec::<String>::new()),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(matches!(empty_keys_err, Err(DataGenieError::Config(_))));
+
+        // 3. RecordSchema & FieldSchema edge cases
+        let default_schema = RecordSchema::default().field("id", FieldSchema::integer().coerce());
+        let passed = default_schema.parse(record! { "id" => 10.0, "extra" => "kept" }).unwrap();
+        assert_eq!(passed.get("id"), Some(&json!(10)));
+        assert_eq!(passed.get("extra"), Some(&json!("kept")));
+
+        let reject_schema = RecordSchema::new()
+            .field("id", FieldSchema::integer())
+            .reject_unknown();
+        assert!(reject_schema.parse(record! { "id" => 1, "extra" => "boom" }).is_err());
+
+        // optional() without nullable() rejects explicit null
+        let opt_only = RecordSchema::new().field("nick", FieldSchema::string().optional());
+        assert!(opt_only.parse(record! {}).is_ok());
+        assert!(opt_only.parse(record! { "nick" => Value::Null }).is_err());
+
+        // Multiple refine() checks all run + min_length counts Unicode chars + boolean coerces 1/0
+        let multi_refine = RecordSchema::new()
+            .field(
+                "code",
+                FieldSchema::string()
+                    .min_length(2)
+                    .refine(|v| v.as_str().is_some_and(|s| s.starts_with('A')), "must start with A")
+                    .refine(|v| v.as_str().is_some_and(|s| s.ends_with('Z')), "must end with Z"),
+            )
+            .field("flag", FieldSchema::boolean().coerce());
+        assert!(multi_refine.parse(record! { "code" => "é", "flag" => 1 }).is_err()); // 1 char (2 bytes) < 2
+        assert!(multi_refine.parse(record! { "code" => "B1Z", "flag" => 1 }).is_err()); // first refine fails
+        assert!(multi_refine.parse(record! { "code" => "A1Y", "flag" => 1 }).is_err()); // second refine fails
+        let ok_ref = multi_refine.parse(record! { "code" => "A1Z", "flag" => 1 }).unwrap();
+        assert_eq!(ok_ref.get("flag"), Some(&json!(true)));
+
+        // 4. Transformers & Filters: string_to_int rejects NaN/inf, date_parse timezone, RenameField order, PII email/salt, try_new/try_pattern_match
+        let tr_rec = record! {
+            "a" => "1",
+            "b" => "2",
+            "c" => "3",
+            "nan_int" => "NaN",
+            "inf_int" => "inf",
+            "tz_date" => " 2026-05-01 12:30:00 +0200 ",
+            "handle" => "@alice",
+            "short_email" => "a@example.com",
+            "ssn" => "123-45-6789"
+        };
+        let pii_unsalted = PIIMaskingTransformer::new()
+            .mask("handle", MaskStrategy::Partial)
+            .mask("short_email", MaskStrategy::Partial)
+            .mask("ssn", MaskStrategy::Hash);
+        let pii_salted = PIIMaskingTransformer::new()
+            .with_salt("my-secret-pepper")
+            .mask("ssn", MaskStrategy::Hash);
+
+        let renamed = RenameField::new("b", "b_new").transform()(tr_rec.clone());
+        let keys: Vec<&str> = renamed.keys().map(String::as_str).collect();
+        assert_eq!(&keys[..3], &["a", "b_new", "c"]);
+
+        let converted = BasicFieldTransformer::new(["nan_int", "inf_int"]).string_to_int()(tr_rec.clone());
+        assert_eq!(converted.get("nan_int"), Some(&json!("NaN")));
+        assert_eq!(converted.get("inf_int"), Some(&json!("inf")));
+
+        let dated = BasicFieldTransformer::new(["tz_date"]).date_parse("%Y-%m-%d %H:%M:%S %z")(tr_rec.clone());
+        assert_eq!(dated.get("tz_date"), Some(&json!("2026-05-01T10:30:00+00:00")));
+
+        let masked1 = pii_unsalted.transform()(tr_rec.clone());
+        let masked2 = pii_salted.transform()(tr_rec);
+        assert_eq!(masked1.get("handle"), Some(&json!("@a****"))); // not treated as email!
+        assert_eq!(masked1.get("short_email"), Some(&json!("*@example.com")));
+        assert_ne!(masked1.get("ssn"), masked2.get("ssn"));
+
+        assert!(FilterExpression::try_new("a >").is_err());
+        assert!(!FilterExpression::new("a >").is_valid());
+        assert!(SetCalculatedField::try_new("x", "a +").is_err());
+        assert!(try_pattern_match("[invalid").is_err());
+        assert!(value_match([1])(&json!(1.0)));
+        assert!(!greater_than(10.0)(&json!("inf")));
+    });
+}
+
+#[test]
+fn test_infer_schema_and_preview_p1_fixes() {
+    block_on(async {
+        let recs = vec![
+            record! { "first-name" => "2026-01-01T00:00:00Z", "type" => 1, "123col" => "present" },
+            record! { "first-name" => "not-a-date", "type" => 2 }, // 123col missing -> nullable
+        ];
+
+        // limit/sample_size = 0 reads 0 records
+        let zero_preview = Job::preview(MemoryReader::new(recs.clone()), Some(0), None).await.unwrap();
+        assert!(zero_preview.is_empty());
+
+        let zero_schema = Job::infer_schema(
+            MemoryReader::new(recs.clone()),
+            InferSchemaOptions {
+                sample_size: Some(0),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(zero_schema.fields.is_empty());
+
+        let inferred = Job::infer_schema(
+            MemoryReader::new(recs),
+            InferSchemaOptions {
+                sample_size: Some(10),
+                table_name: Some("order".to_string()),
+                interface_name: Some("OrderRecord".to_string()),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Mixed date + string widens to string (not date)
+        assert_eq!(inferred.fields.get("first-name").unwrap().field_type, "string");
+        // Missing field marked nullable
+        assert!(inferred.fields.get("123col").unwrap().nullable);
+        assert!(!inferred.fields.get("type").unwrap().nullable);
+
+        // Sanitized codegen
+        assert!(inferred.rust.contains("#[serde(rename = \"first-name\")]"));
+        assert!(inferred.rust.contains("pub first_name: String,"));
+        assert!(inferred.rust.contains("pub type_: f64,"));
+        assert!(inferred.rust.contains("pub _123col: Option<String>,"));
+        assert!(inferred.typescript.contains("\"first-name\": string;"));
+        assert!(inferred.zod.contains("\"first-name\": z.string(),"));
+        assert!(inferred.sql.contains("CREATE TABLE \"order\" ("));
+        assert!(inferred.sql.contains("\"first-name\" VARCHAR(255) NOT NULL"));
+    });
+}
+
+#[cfg(feature = "http")]
+#[test]
+fn test_http_reader_p1_headers_relative_pagination_and_loop_guard() {
+    block_on(async {
+        use data_genie::{HttpReader, HttpReaderOptions};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let recorded_reqs = Arc::new(Mutex::new(Vec::<String>::new()));
+        let reqs_srv = Arc::clone(&recorded_reqs);
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let reqs = Arc::clone(&reqs_srv);
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    reqs.lock().unwrap().push(req.clone());
+
+                    let body = if req.starts_with("GET /rel/page1") {
+                        serde_json::to_string(&json!({
+                            "data": [{"id": 1}],
+                            "next": "/rel/page2"
+                        }))
+                        .unwrap()
+                    } else if req.starts_with("GET /rel/page2") {
+                        serde_json::to_string(&json!({
+                            "data": [{"id": 2}],
+                            "next": null
+                        }))
+                        .unwrap()
+                    } else if req.starts_with("GET /loop") {
+                        serde_json::to_string(&json!({
+                            "data": [{"id": 99}],
+                            "next": "/loop"
+                        }))
+                        .unwrap()
+                    } else {
+                        "[]".to_string()
+                    };
+                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body);
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+
+        // 1. Lowercase "get", relative next_page_url, and NO Content-Type header sent on bodyless GET
+        let opts = HttpReaderOptions {
+            method: "get".to_string(),
+            next_page_url: Some(Arc::new(|res: &Value, _| res.get("next").and_then(|v| v.as_str()).map(String::from))),
+            ..Default::default()
+        };
+        let out = MemoryWriter::new();
+        Job::run(HttpReader::with_options(format!("{}/rel/page1", base_url), opts), out.clone())
+            .await
+            .unwrap();
+        assert_eq!(out.len(), 2);
+
+        let reqs = recorded_reqs.lock().unwrap().clone();
+        assert!(reqs[0].starts_with("GET /rel/page1"));
+        assert!(!reqs[0].to_ascii_lowercase().contains("content-type:"));
+
+        // 2. Pagination cycle detected immediately instead of infinite loop
+        let loop_opts = HttpReaderOptions {
+            next_page_url: Some(Arc::new(|res: &Value, _| res.get("next").and_then(|v| v.as_str()).map(String::from))),
+            ..Default::default()
+        };
+        let loop_res = Job::run(
+            HttpReader::with_options(format!("{}/loop", base_url), loop_opts),
+            MemoryWriter::new(),
+        )
+        .await;
+        assert!(loop_res.unwrap_err().to_string().contains("pagination loop"));
+    });
+}

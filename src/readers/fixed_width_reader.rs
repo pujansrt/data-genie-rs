@@ -73,16 +73,16 @@ impl FixedWidthReader {
     fn split_line(line: &str, widths: &[usize]) -> Vec<String> {
         let chars: Vec<char> = line.chars().collect();
         let mut values = Vec::with_capacity(widths.len());
-        let mut pos = 0;
+        let mut pos: usize = 0;
         for &w in widths {
-            let end = (pos + w).min(chars.len());
+            let end = pos.saturating_add(w).min(chars.len());
             if pos < chars.len() {
                 let s: String = chars[pos..end].iter().collect();
                 values.push(s.trim().to_string());
             } else {
                 values.push(String::new());
             }
-            pos += w;
+            pos = pos.saturating_add(w);
         }
         values
     }
@@ -102,19 +102,39 @@ impl DataReader for FixedWidthReader {
                     "Field widths must be defined before reading.".to_string(),
                 ))?;
             }
+            if field_widths.contains(&0) {
+                Err(DataGenieError::Config(
+                    "Field widths must be positive numbers.".to_string(),
+                ))?;
+            }
+            if !has_headers && !initial_field_names.is_empty() && initial_field_names.len() != field_widths.len() {
+                Err(DataGenieError::Config(format!(
+                    "Number of field names ({}) must match number of field widths ({}).",
+                    initial_field_names.len(),
+                    field_widths.len()
+                )))?;
+            }
 
             let mut lines = source.get_buf_reader().await?.lines();
 
             let mut initialized = false;
             let mut field_names = initial_field_names;
+            let mut is_first_line = true;
 
-            while let Some(line) = lines.next_line().await? {
-                if line.trim().is_empty() {
+            while let Some(raw_line) = lines.next_line().await? {
+                let line = if is_first_line {
+                    is_first_line = false;
+                    raw_line.strip_prefix('\u{FEFF}').unwrap_or(&raw_line)
+                } else {
+                    &raw_line
+                };
+
+                if line.is_empty() {
                     continue;
                 }
 
                 if !initialized && has_headers {
-                    field_names = Self::split_line(&line, &field_widths);
+                    field_names = Self::split_line(line, &field_widths);
                     initialized = true;
                     continue;
                 }
@@ -126,7 +146,7 @@ impl DataReader for FixedWidthReader {
                     initialized = true;
                 }
 
-                let values = Self::split_line(&line, &field_widths);
+                let values = Self::split_line(line, &field_widths);
                 let mut record = DataRecord::new();
                 for (i, name) in field_names.iter().enumerate() {
                     let val = values.get(i).cloned().unwrap_or_default();

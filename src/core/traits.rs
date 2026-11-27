@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
 use tokio::sync::Mutex;
 
@@ -60,7 +60,7 @@ macro_rules! record {
     ($($k:expr => $v:expr),+ $(,)?) => {{
         let mut map = $crate::DataRecord::new();
         $(
-            map.insert(($k).to_string(), serde_json::json!($v));
+            map.insert(($k).to_string(), $crate::serde_json::json!($v));
         )+
         map
     }};
@@ -77,11 +77,12 @@ pub fn value_to_string(v: &Value) -> String {
     }
 }
 
-/// Parse a numeric value from a JSON Value (works for both `Value::Number` and numeric strings).
+/// Parse a finite numeric value from a JSON Value (works for both `Value::Number` and numeric strings).
+/// Rejects non-finite values such as `"NaN"`, `"inf"`, and `"Infinity"`.
 pub fn value_to_f64(v: &Value) -> Option<f64> {
     match v {
-        Value::Number(n) => n.as_f64(),
-        Value::String(s) => s.trim().parse::<f64>().ok(),
+        Value::Number(n) => n.as_f64().filter(|f| f.is_finite()),
+        Value::String(s) => s.trim().parse::<f64>().ok().filter(|f| f.is_finite()),
         _ => None,
     }
 }
@@ -106,6 +107,7 @@ pub type RecordStream = Pin<Box<dyn Stream<Item = Result<Option<DataRecord>>> + 
 pub struct SharedWriter {
     inner: Arc<Mutex<Box<dyn DataWriter>>>,
     write_count: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
 }
 
 impl SharedWriter {
@@ -113,6 +115,7 @@ impl SharedWriter {
         Self {
             inner: Arc::new(Mutex::new(Box::new(writer))),
             write_count: Arc::new(AtomicUsize::new(0)),
+            closed: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -128,14 +131,24 @@ impl SharedWriter {
         self.write_count.load(Ordering::Relaxed)
     }
 
+    /// Whether [`close_dlq`](Self::close_dlq) has already closed the underlying DLQ writer.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// Flushes and closes the underlying DLQ writer. Calling this multiple times is a safe no-op.
     pub async fn close_dlq(&self) -> Result<()> {
         let mut guard = self.inner.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.closed.store(true, Ordering::Release);
         guard.close().await
     }
 
     /// Synchronously flushes and closes the underlying DLQ writer without requiring an async context.
     pub fn close_dlq_blocking(&self) -> Result<()> {
-        crate::core::job::block_on(self.close_dlq())
+        crate::core::job::block_on_send(self.close_dlq())
     }
 }
 
@@ -196,6 +209,11 @@ pub trait DataSink: Send + Sync {
         Ok(())
     }
 
+    /// Aborts the sink on failure without committing or uploading buffered partial data.
+    async fn abort(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Identifier for logging and error messages.
     fn name(&self) -> Cow<'_, str>;
 
@@ -229,6 +247,13 @@ pub trait DataReader: Send {
     /// Sets a Dead Letter Queue (DLQ) writer and propagates it to any upstream reader.
     fn set_dlq(&mut self, _writer: SharedWriter) {}
 
+    /// Internal helper used by outer readers to propagate a shared DLQ upstream without
+    /// transferring close ownership or overwriting a distinct DLQ already configured upstream.
+    #[doc(hidden)]
+    fn propagate_dlq(&mut self, writer: SharedWriter) {
+        self.set_dlq(writer);
+    }
+
     /// Configures whether parsing/validation errors should be ignored (diverted to DLQ if set).
     fn set_ignore_errors(&mut self, _ignore: bool) {}
 }
@@ -259,6 +284,12 @@ pub trait DataWriter: Send {
 
     /// Flushes and closes the underlying resource.
     async fn close(&mut self) -> Result<()>;
+
+    /// Aborts the writer on failure (rolling back transactions, discarding buffered data,
+    /// and releasing resources without committing or finalizing partial outputs).
+    async fn abort(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -267,8 +298,20 @@ impl DataWriter for Box<dyn DataWriter> {
         (**self).write(record).await
     }
 
+    async fn write_opt(&mut self, record: Option<DataRecord>) -> Result<()> {
+        (**self).write_opt(record).await
+    }
+
+    async fn write_all(&mut self, records: &mut RecordStream) -> Result<()> {
+        (**self).write_all(records).await
+    }
+
     async fn close(&mut self) -> Result<()> {
         (**self).close().await
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        (**self).abort().await
     }
 }
 

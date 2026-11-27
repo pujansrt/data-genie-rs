@@ -7,18 +7,22 @@ Scale throughput across multiple Tokio worker tasks using `ParallelWriter`.
 `ParallelWriter` buffers incoming records into batches of `batch_size` and dispatches them across `concurrency` background Tokio worker tasks in round-robin order.
 
 ```rust
-use data_genie::{CSVReader, CallbackWriter, Job, ParallelWriter};
+use data_genie::{CSVReader, CallbackWriter, Job, ParallelWriter, ParallelWriterOptions};
 
 fn main() -> data_genie::Result<()> {
     let reader = CSVReader::new("massive_data.csv");
 
     // 4 concurrent workers, 500 records per batch
-    let writer = ParallelWriter::new(4, 500, || {
-        Box::new(CallbackWriter::new(|record| async move {
+    let options = ParallelWriterOptions {
+        concurrency: 4,
+        batch_size: 500,
+    };
+    let writer = ParallelWriter::new(options, |_worker_id| {
+        CallbackWriter::new_async(|record| async move {
             // Executed concurrently across Tokio worker threads
             let _ = record;
             Ok(())
-        }))
+        })
     });
 
     Job::run_blocking(reader, writer)?;

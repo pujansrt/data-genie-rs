@@ -1,2 +1,6 @@
 [alias]
-cov = "run --example coverage-report --"
+cov = "run --quiet --example coverage_report --"
+cov-summary = "run --quiet --example coverage_report -- --summary-only"
+cov-html = "run --quiet --example coverage_report -- --open"
+cov-lcov = "llvm-cov --all-features --lib --test integration_tests --lcov --output-path lcov.info"
+stress-test = "run --release --example stress-test"

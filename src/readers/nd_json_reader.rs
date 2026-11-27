@@ -22,6 +22,7 @@ pub struct NDJsonReader {
     schema: Option<Arc<dyn SchemaValidator>>,
     ignore_errors: bool,
     dlq_writer: Option<SharedWriter>,
+    local_dlq_records: Arc<AtomicUsize>,
     rejected_without_dlq: Arc<AtomicUsize>,
 }
 
@@ -32,6 +33,7 @@ impl NDJsonReader {
             schema: None,
             ignore_errors: false,
             dlq_writer: None,
+            local_dlq_records: Arc::new(AtomicUsize::new(0)),
             rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -42,6 +44,7 @@ impl NDJsonReader {
             schema: options.schema,
             ignore_errors: options.ignore_errors.unwrap_or(false),
             dlq_writer: None,
+            local_dlq_records: Arc::new(AtomicUsize::new(0)),
             rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -69,18 +72,57 @@ impl DataReader for NDJsonReader {
         let schema = self.schema.clone();
         let ignore_errors = self.ignore_errors;
         let dlq_writer = self.dlq_writer.clone();
+        let local_dlq_records = Arc::clone(&self.local_dlq_records);
         let rejected_without_dlq = Arc::clone(&self.rejected_without_dlq);
 
         Box::pin(try_stream! {
-            let mut lines = source.get_buf_reader().await?.lines();
+            let mut reader = source.get_buf_reader().await?;
+            let mut raw_buf: Vec<u8> = Vec::with_capacity(256);
+            let mut is_first_line = true;
 
-            while let Some(line) = lines.next_line().await? {
+            loop {
+                raw_buf.clear();
+                let bytes_read = reader.read_until(b'\n', &mut raw_buf).await?;
+                if bytes_read == 0 {
+                    break;
+                }
+
+                let slice = if is_first_line {
+                    is_first_line = false;
+                    raw_buf.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&raw_buf)
+                } else {
+                    &raw_buf[..]
+                };
+
+                let line_str = match std::str::from_utf8(slice) {
+                    Ok(s) => s,
+                    Err(utf8_err) => {
+                        if ignore_errors {
+                            if let Some(ref dlq) = dlq_writer {
+                                let mut dlq_rec = DataRecord::new();
+                                dlq_rec.insert("_raw".to_string(), Value::String(String::from_utf8_lossy(slice).into_owned()));
+                                dlq_rec.insert("_error".to_string(), Value::String(format!("Invalid UTF-8: {}", utf8_err)));
+                                dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
+                                dlq.write_dlq(dlq_rec).await?;
+                                local_dlq_records.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
+                            }
+                            continue;
+                        } else {
+                            Err(DataGenieError::Parse(format!("Invalid UTF-8 in {}: {}", source.name(), utf8_err)))?;
+                            unreachable!()
+                        }
+                    }
+                };
+
+                let line = line_str.trim_end_matches(&['\r', '\n'][..]);
                 if line.trim().is_empty() {
                     continue;
                 }
 
                 let parsed: std::result::Result<DataRecord, serde_json::Error> =
-                    serde_json::from_str(&line);
+                    serde_json::from_str(line);
 
                 match parsed {
                     Ok(record) => {
@@ -91,10 +133,11 @@ impl DataReader for NDJsonReader {
                                     if ignore_errors {
                                         if let Some(ref dlq) = dlq_writer {
                                             let mut dlq_rec = DataRecord::new();
-                                            dlq_rec.insert("_raw_line".to_string(), Value::String(line));
+                                            dlq_rec.insert("_raw".to_string(), Value::String(line.to_string()));
                                             dlq_rec.insert("_error".to_string(), Value::String(err.to_string()));
-                                            dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
+                                            dlq_rec.insert("_type".to_string(), Value::String("validation_error".to_string()));
                                             dlq.write_dlq(dlq_rec).await?;
+                                            local_dlq_records.fetch_add(1, Ordering::Relaxed);
                                         } else {
                                             rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                         }
@@ -112,10 +155,11 @@ impl DataReader for NDJsonReader {
                         if ignore_errors {
                             if let Some(ref dlq) = dlq_writer {
                                 let mut dlq_rec = DataRecord::new();
-                                dlq_rec.insert("_raw_line".to_string(), Value::String(line));
+                                dlq_rec.insert("_raw".to_string(), Value::String(line.to_string()));
                                 dlq_rec.insert("_error".to_string(), Value::String(err.to_string()));
                                 dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                 dlq.write_dlq(dlq_rec).await?;
+                                local_dlq_records.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                             }
@@ -140,8 +184,15 @@ impl DataReader for NDJsonReader {
         self.ignore_errors = true;
     }
 
+    fn propagate_dlq(&mut self, writer: SharedWriter) {
+        if self.dlq_writer.is_none() {
+            self.dlq_writer = Some(writer);
+            self.ignore_errors = true;
+        }
+    }
+
     fn dlq_record_count(&self) -> usize {
-        self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count)
+        self.local_dlq_records.load(Ordering::Relaxed)
     }
 
     fn rejected_record_count(&self) -> usize {

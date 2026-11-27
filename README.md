@@ -132,10 +132,10 @@ By default, `data-genie` compiles with a minimal dependency footprint. Enable he
 
 ```toml
 [dependencies]
-data-genie = { version = "0.1.6", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
+data-genie = { version = "0.1.7", features = ["parquet", "xlsx", "s3", "http"] } # selected dependency
 
 # OR enable everything:
-# data-genie = { version = "0.1.6", features = ["full"] }
+# data-genie = { version = "0.1.7", features = ["full"] }
 ```
 
 ### 5. CLI Usage

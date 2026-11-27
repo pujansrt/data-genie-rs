@@ -19,7 +19,7 @@ pub struct TSVReader {
 impl TSVReader {
     pub fn new<S: Into<SourceInput>>(source: S) -> Self {
         Self {
-            inner: CSVReader::new(source).set_field_separator('\t'),
+            inner: CSVReader::new(source).set_field_separator('\t').set_quoting(false),
         }
     }
 
@@ -31,7 +31,7 @@ impl TSVReader {
             ignore_errors: None,
         };
         Self {
-            inner: CSVReader::with_options(source, csv_opts),
+            inner: CSVReader::with_options(source, csv_opts).set_quoting(false),
         }
     }
 
@@ -53,6 +53,10 @@ impl DataReader for TSVReader {
 
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.inner.set_dlq(writer);
+    }
+
+    fn propagate_dlq(&mut self, writer: SharedWriter) {
+        self.inner.propagate_dlq(writer);
     }
 
     fn skipped_record_count(&self) -> usize {

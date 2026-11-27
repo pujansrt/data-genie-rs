@@ -105,6 +105,7 @@ pub struct ParquetWriter {
     buffer: Vec<DataRecord>,
     writer: Option<ArrowWriter<Vec<u8>>>,
     arrow_schema: Option<Arc<ArrowSchema>>,
+    is_closed: bool,
 }
 
 impl ParquetWriter {
@@ -116,6 +117,7 @@ impl ParquetWriter {
             buffer: Vec::new(),
             writer: None,
             arrow_schema: None,
+            is_closed: false,
         }
     }
 
@@ -127,6 +129,7 @@ impl ParquetWriter {
             buffer: Vec::new(),
             writer: None,
             arrow_schema: None,
+            is_closed: false,
         }
     }
 
@@ -180,7 +183,10 @@ impl ParquetWriter {
                                 if field_def.optional {
                                     builder.append_null();
                                 } else {
-                                    builder.append_value("");
+                                    return Err(DataGenieError::Validation(format!(
+                                        "Parquet column '{}' is required (non-optional) but missing or null",
+                                        field_name
+                                    )));
                                 }
                             }
                             Some(v) => builder.append_value(value_to_string(v)),
@@ -196,23 +202,44 @@ impl ParquetWriter {
                                 if field_def.optional {
                                     builder.append_null();
                                 } else {
-                                    builder.append_value(0);
+                                    return Err(DataGenieError::Validation(format!(
+                                        "Parquet column '{}' is required (non-optional) but missing or null",
+                                        field_name
+                                    )));
                                 }
                             }
                             Some(Value::Number(n)) => {
                                 if let Some(i) = n.as_i64() {
                                     builder.append_value(i);
-                                } else if let Some(f) = n.as_f64() {
+                                } else if let Some(f) = n.as_f64()
+                                    && f.is_finite()
+                                    && f.fract() == 0.0
+                                    && f >= (i64::MIN as f64)
+                                    && f < (i64::MAX as f64)
+                                {
                                     builder.append_value(f as i64);
                                 } else {
-                                    builder.append_value(0);
+                                    return Err(DataGenieError::Validation(format!(
+                                        "Parquet Int64 column '{}' cannot represent numeric value {}",
+                                        field_name, n
+                                    )));
                                 }
                             }
                             Some(Value::String(s)) => {
-                                let i = s.trim().parse::<i64>().unwrap_or(0);
+                                let i = s.trim().parse::<i64>().map_err(|_| {
+                                    DataGenieError::Validation(format!(
+                                        "Parquet Int64 column '{}' could not parse {:?} as integer",
+                                        field_name, s
+                                    ))
+                                })?;
                                 builder.append_value(i);
                             }
-                            _ => builder.append_value(0),
+                            Some(other) => {
+                                return Err(DataGenieError::Validation(format!(
+                                    "Parquet Int64 column '{}' expected integer, got {}",
+                                    field_name, other
+                                )));
+                            }
                         }
                     }
                     columns.push(Arc::new(builder.finish()));
@@ -225,11 +252,19 @@ impl ParquetWriter {
                                 if field_def.optional {
                                     builder.append_null();
                                 } else {
-                                    builder.append_value(0.0);
+                                    return Err(DataGenieError::Validation(format!(
+                                        "Parquet column '{}' is required (non-optional) but missing or null",
+                                        field_name
+                                    )));
                                 }
                             }
                             Some(v) => {
-                                let f = value_to_f64(v).unwrap_or(0.0);
+                                let f = value_to_f64(v).ok_or_else(|| {
+                                    DataGenieError::Validation(format!(
+                                        "Parquet Double column '{}' could not parse {} as finite float",
+                                        field_name, v
+                                    ))
+                                })?;
                                 builder.append_value(f);
                             }
                         }
@@ -244,12 +279,31 @@ impl ParquetWriter {
                                 if field_def.optional {
                                     builder.append_null();
                                 } else {
-                                    builder.append_value(false);
+                                    return Err(DataGenieError::Validation(format!(
+                                        "Parquet column '{}' is required (non-optional) but missing or null",
+                                        field_name
+                                    )));
                                 }
                             }
                             Some(Value::Bool(b)) => builder.append_value(*b),
-                            Some(Value::String(s)) => builder.append_value(s.eq_ignore_ascii_case("true") || s == "1"),
-                            _ => builder.append_value(false),
+                            Some(Value::Number(n)) if n.as_i64() == Some(1) => builder.append_value(true),
+                            Some(Value::Number(n)) if n.as_i64() == Some(0) => builder.append_value(false),
+                            Some(Value::String(s)) => match s.trim().to_ascii_lowercase().as_str() {
+                                "true" | "1" => builder.append_value(true),
+                                "false" | "0" => builder.append_value(false),
+                                _ => {
+                                    return Err(DataGenieError::Validation(format!(
+                                        "Parquet Boolean column '{}' could not parse {:?} as boolean",
+                                        field_name, s
+                                    )));
+                                }
+                            },
+                            Some(other) => {
+                                return Err(DataGenieError::Validation(format!(
+                                    "Parquet Boolean column '{}' expected boolean, got {}",
+                                    field_name, other
+                                )));
+                            }
                         }
                     }
                     columns.push(Arc::new(builder.finish()));
@@ -269,6 +323,9 @@ impl ParquetWriter {
 #[async_trait]
 impl DataWriter for ParquetWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
+        if self.is_closed {
+            return Err(DataGenieError::Other("Writer is already closed".to_string()));
+        }
         self.ensure_initialized()?;
         self.buffer.push(record);
         if self.buffer.len() >= self.batch_size {
@@ -278,15 +335,19 @@ impl DataWriter for ParquetWriter {
     }
 
     async fn close(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
         self.flush_batch()?;
 
         if let Some(wtr) = self.writer.take() {
             let parquet_bytes = wtr.into_inner()?;
             if let Some(path) = self.sink.as_file_path() {
-                if let Some(parent) = path.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent)?;
-                    }
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent)?;
                 }
                 let mut f = File::create(path)?;
                 std::io::Write::write_all(&mut f, &parquet_bytes)?;
@@ -298,6 +359,17 @@ impl DataWriter for ParquetWriter {
                 self.sink.finalize().await?;
             }
         }
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
+        self.buffer.clear();
+        self.writer = None;
+        self.sink.abort().await?;
         Ok(())
     }
 }

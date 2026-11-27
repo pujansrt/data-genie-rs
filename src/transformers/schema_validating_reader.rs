@@ -31,6 +31,8 @@ pub enum SchemaFieldType {
     Any,
 }
 
+type FieldCustomCheck = Arc<dyn Fn(&Value) -> std::result::Result<(), String> + Send + Sync>;
+
 /// Declarative field validator with optional coercion, nullability, and custom predicates.
 #[derive(Clone)]
 pub struct FieldSchema {
@@ -41,7 +43,7 @@ pub struct FieldSchema {
     min_num: Option<f64>,
     max_num: Option<f64>,
     min_len: Option<usize>,
-    custom_check: Option<Arc<dyn Fn(&Value) -> std::result::Result<(), String> + Send + Sync>>,
+    custom_checks: Vec<FieldCustomCheck>,
 }
 
 impl FieldSchema {
@@ -54,7 +56,7 @@ impl FieldSchema {
             min_num: None,
             max_num: None,
             min_len: None,
-            custom_check: None,
+            custom_checks: Vec::new(),
         }
     }
 
@@ -67,7 +69,7 @@ impl FieldSchema {
             min_num: None,
             max_num: None,
             min_len: None,
-            custom_check: None,
+            custom_checks: Vec::new(),
         }
     }
 
@@ -80,7 +82,7 @@ impl FieldSchema {
             min_num: None,
             max_num: None,
             min_len: None,
-            custom_check: None,
+            custom_checks: Vec::new(),
         }
     }
 
@@ -93,7 +95,7 @@ impl FieldSchema {
             min_num: None,
             max_num: None,
             min_len: None,
-            custom_check: None,
+            custom_checks: Vec::new(),
         }
     }
 
@@ -106,7 +108,7 @@ impl FieldSchema {
             min_num: None,
             max_num: None,
             min_len: None,
-            custom_check: None,
+            custom_checks: Vec::new(),
         }
     }
 
@@ -145,7 +147,8 @@ impl FieldSchema {
         F: Fn(&Value) -> bool + Send + Sync + 'static,
     {
         let msg = message.into();
-        self.custom_check = Some(Arc::new(move |v: &Value| if check(v) { Ok(()) } else { Err(msg.clone()) }));
+        self.custom_checks
+            .push(Arc::new(move |v: &Value| if check(v) { Ok(()) } else { Err(msg.clone()) }));
         self
     }
 
@@ -158,7 +161,7 @@ impl FieldSchema {
         };
 
         if v.is_null() {
-            if self.nullable || self.optional {
+            if self.nullable {
                 return Ok(Some(Value::Null));
             }
             return Err(DataGenieError::Validation(format!("Field '{}' cannot be null", field_name)));
@@ -185,6 +188,18 @@ impl FieldSchema {
             },
             SchemaFieldType::Integer => match v {
                 Value::Number(n) if n.is_i64() || n.is_u64() => Value::Number(n.clone()),
+                Value::Number(n) if self.coerce => {
+                    if let Some(f) = n.as_f64()
+                        && f.is_finite()
+                        && f.fract() == 0.0
+                        && f >= (i64::MIN as f64)
+                        && f < (i64::MAX as f64)
+                    {
+                        Value::Number(Number::from(f as i64))
+                    } else {
+                        return Err(DataGenieError::Validation(format!("Field '{}' expected integer, got {}", field_name, v)));
+                    }
+                }
                 Value::String(s) if self.coerce => {
                     let parsed = s
                         .trim()
@@ -196,6 +211,8 @@ impl FieldSchema {
             },
             SchemaFieldType::Boolean => match v {
                 Value::Bool(b) => Value::Bool(*b),
+                Value::Number(n) if self.coerce && n.as_i64() == Some(1) => Value::Bool(true),
+                Value::Number(n) if self.coerce && n.as_i64() == Some(0) => Value::Bool(false),
                 Value::String(s) if self.coerce => match s.trim().to_lowercase().as_str() {
                     "true" | "1" | "yes" => Value::Bool(true),
                     "false" | "0" | "no" => Value::Bool(false),
@@ -210,42 +227,39 @@ impl FieldSchema {
             },
         };
 
-        if let Some(min) = self.min_num {
-            if let Some(n) = coerced.as_f64() {
-                if n < min {
-                    return Err(DataGenieError::Validation(format!(
-                        "Field '{}' value {} is less than minimum {}",
-                        field_name, n, min
-                    )));
-                }
+        if let Some(min) = self.min_num
+            && let Some(n) = coerced.as_f64()
+            && n < min
+        {
+            return Err(DataGenieError::Validation(format!(
+                "Field '{}' value {} is less than minimum {}",
+                field_name, n, min
+            )));
+        }
+
+        if let Some(max) = self.max_num
+            && let Some(n) = coerced.as_f64()
+            && n > max
+        {
+            return Err(DataGenieError::Validation(format!(
+                "Field '{}' value {} is greater than maximum {}",
+                field_name, n, max
+            )));
+        }
+
+        if let Some(min_len) = self.min_len
+            && let Some(s) = coerced.as_str()
+        {
+            let char_len = s.chars().count();
+            if char_len < min_len {
+                return Err(DataGenieError::Validation(format!(
+                    "Field '{}' length {} is less than minimum {}",
+                    field_name, char_len, min_len
+                )));
             }
         }
 
-        if let Some(max) = self.max_num {
-            if let Some(n) = coerced.as_f64() {
-                if n > max {
-                    return Err(DataGenieError::Validation(format!(
-                        "Field '{}' value {} is greater than maximum {}",
-                        field_name, n, max
-                    )));
-                }
-            }
-        }
-
-        if let Some(min_len) = self.min_len {
-            if let Some(s) = coerced.as_str() {
-                if s.len() < min_len {
-                    return Err(DataGenieError::Validation(format!(
-                        "Field '{}' length {} is less than minimum {}",
-                        field_name,
-                        s.len(),
-                        min_len
-                    )));
-                }
-            }
-        }
-
-        if let Some(ref check) = self.custom_check {
+        for check in &self.custom_checks {
             if let Err(msg) = check(&coerced) {
                 return Err(DataGenieError::Validation(format!("Field '{}': {}", field_name, msg)));
             }
@@ -256,10 +270,17 @@ impl FieldSchema {
 }
 
 /// Zod-inspired declarative schema validator for `DataRecord` objects.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RecordSchema {
     fields: IndexMap<String, FieldSchema>,
     passthrough: bool,
+    reject_unknown_fields: bool,
+}
+
+impl Default for RecordSchema {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RecordSchema {
@@ -267,6 +288,7 @@ impl RecordSchema {
         Self {
             fields: IndexMap::new(),
             passthrough: true,
+            reject_unknown_fields: false,
         }
     }
 
@@ -275,8 +297,16 @@ impl RecordSchema {
         self
     }
 
+    /// Strips any keys not explicitly declared in the schema.
     pub fn strict(mut self) -> Self {
         self.passthrough = false;
+        self
+    }
+
+    /// Fails validation with `DataGenieError::Validation` if any undeclared keys are present.
+    pub fn reject_unknown(mut self) -> Self {
+        self.passthrough = false;
+        self.reject_unknown_fields = true;
         self
     }
 }
@@ -290,6 +320,14 @@ impl SchemaValidator for RecordSchema {
             if let Some(val) = field_schema.validate_value(field_name, existing.as_ref())? {
                 validated.insert(field_name.clone(), val);
             }
+        }
+
+        if self.reject_unknown_fields && !record.is_empty() {
+            let unknown_keys: Vec<&str> = record.keys().map(String::as_str).collect();
+            return Err(DataGenieError::Validation(format!(
+                "Unexpected unknown field(s) in record: {}",
+                unknown_keys.join(", ")
+            )));
         }
 
         if self.passthrough {
@@ -307,7 +345,9 @@ pub struct SchemaValidatingReader<R: DataReader> {
     reader: R,
     schema: Arc<dyn SchemaValidator>,
     dlq_writer: Option<SharedWriter>,
+    owns_dlq: bool,
     skipped_records: Arc<AtomicUsize>,
+    local_dlq_records: Arc<AtomicUsize>,
     rejected_without_dlq: Arc<AtomicUsize>,
 }
 
@@ -317,7 +357,9 @@ impl<R: DataReader> SchemaValidatingReader<R> {
             reader,
             schema: Arc::new(schema),
             dlq_writer: None,
+            owns_dlq: false,
             skipped_records: Arc::new(AtomicUsize::new(0)),
+            local_dlq_records: Arc::new(AtomicUsize::new(0)),
             rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -327,7 +369,9 @@ impl<R: DataReader> SchemaValidatingReader<R> {
             reader,
             schema,
             dlq_writer: None,
+            owns_dlq: false,
             skipped_records: Arc::new(AtomicUsize::new(0)),
+            local_dlq_records: Arc::new(AtomicUsize::new(0)),
             rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -335,7 +379,8 @@ impl<R: DataReader> SchemaValidatingReader<R> {
     pub fn with_dlq<W: Into<SharedWriter>>(mut self, writer: W) -> Self {
         let shared = writer.into();
         self.dlq_writer = Some(shared.clone());
-        self.reader.set_dlq(shared);
+        self.owns_dlq = true;
+        self.reader.propagate_dlq(shared);
         self
     }
 }
@@ -345,25 +390,42 @@ impl<R: DataReader + 'static> DataReader for SchemaValidatingReader<R> {
         let mut upstream = self.reader.read();
         let schema = Arc::clone(&self.schema);
         let dlq_writer = self.dlq_writer.clone();
+        let owns_dlq = self.owns_dlq;
         let skipped_records = Arc::clone(&self.skipped_records);
+        let local_dlq_records = Arc::clone(&self.local_dlq_records);
         let rejected_without_dlq = Arc::clone(&self.rejected_without_dlq);
 
         Box::pin(try_stream! {
             while let Some(item) = upstream.next().await {
-                let Some(record) = item? else {
+                let record_opt = match item {
+                    Ok(opt) => opt,
+                    Err(err) => {
+                        if owns_dlq
+                            && let Some(ref dlq) = dlq_writer
+                        {
+                            let _ = dlq.close_dlq().await;
+                        }
+                        Err(err)?;
+                        unreachable!()
+                    }
+                };
+                let Some(record) = record_opt else {
                     skipped_records.fetch_add(1, Ordering::Relaxed);
                     continue;
                 };
 
-                match schema.parse(record.clone()) {
+                let dlq_backup = dlq_writer.as_ref().map(|_| record.clone());
+
+                match schema.parse(record) {
                     Ok(validated) => {
                         yield Some(validated);
                     }
                     Err(err) => {
                         if let Some(ref dlq) = dlq_writer {
-                            let mut dlq_rec = record;
+                            let mut dlq_rec = dlq_backup.unwrap();
                             dlq_rec.insert("_schema_error".to_string(), Value::String(err.to_string()));
                             dlq.write_dlq(dlq_rec).await?;
+                            local_dlq_records.fetch_add(1, Ordering::Relaxed);
                         } else {
                             rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                             eprintln!("Schema validation failed for record. Skipping. {}", err);
@@ -372,7 +434,9 @@ impl<R: DataReader + 'static> DataReader for SchemaValidatingReader<R> {
                 }
             }
 
-            if let Some(ref dlq) = dlq_writer {
+            if owns_dlq
+                && let Some(ref dlq) = dlq_writer
+            {
                 dlq.close_dlq().await?;
             }
         })
@@ -380,7 +444,16 @@ impl<R: DataReader + 'static> DataReader for SchemaValidatingReader<R> {
 
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.dlq_writer = Some(writer.clone());
-        self.reader.set_dlq(writer);
+        self.owns_dlq = true;
+        self.reader.propagate_dlq(writer);
+    }
+
+    fn propagate_dlq(&mut self, writer: SharedWriter) {
+        if self.dlq_writer.is_none() {
+            self.dlq_writer = Some(writer.clone());
+            self.owns_dlq = false;
+            self.reader.propagate_dlq(writer);
+        }
     }
 
     fn skipped_record_count(&self) -> usize {
@@ -388,15 +461,12 @@ impl<R: DataReader + 'static> DataReader for SchemaValidatingReader<R> {
     }
 
     fn dlq_record_count(&self) -> usize {
-        self.reader
-            .dlq_record_count()
-            .max(self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count))
+        self.reader.dlq_record_count() + self.local_dlq_records.load(Ordering::Relaxed)
     }
 
     fn rejected_record_count(&self) -> usize {
-        self.reader
-            .rejected_record_count()
-            .max(self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count))
+        self.reader.rejected_record_count()
+            + self.local_dlq_records.load(Ordering::Relaxed)
             + self.rejected_without_dlq.load(Ordering::Relaxed)
     }
 

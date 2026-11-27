@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
-use crate::core::error::Result;
+use crate::core::error::{DataGenieError, Result};
 use crate::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter, value_to_string};
 use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
@@ -58,6 +58,17 @@ impl XMLWriter {
         Ok(())
     }
 
+    fn is_valid_xml_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        if !(first.is_alphabetic() || first == '_' || first == ':') {
+            return false;
+        }
+        chars.all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+    }
+
     fn escape_xml(unsafe_str: &str) -> String {
         let mut escaped = String::with_capacity(unsafe_str.len());
         for c in unsafe_str.chars() {
@@ -67,6 +78,8 @@ impl XMLWriter {
                 '&' => escaped.push_str("&amp;"),
                 '"' => escaped.push_str("&quot;"),
                 '\'' => escaped.push_str("&apos;"),
+                // Strip illegal XML 1.0 control characters (retain \t, \n, \r)
+                '\u{0000}'..='\u{0008}' | '\u{000B}' | '\u{000C}' | '\u{000E}'..='\u{001F}' => {}
                 other => escaped.push(other),
             }
         }
@@ -77,6 +90,30 @@ impl XMLWriter {
 #[async_trait]
 impl DataWriter for XMLWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
+        if self.is_closed {
+            return Err(DataGenieError::Other("Writer is already closed".to_string()));
+        }
+        if !Self::is_valid_xml_name(&self.root_tag) {
+            return Err(DataGenieError::Validation(format!(
+                "Invalid XML root tag name: {:?}",
+                self.root_tag
+            )));
+        }
+        if !Self::is_valid_xml_name(&self.record_tag) {
+            return Err(DataGenieError::Validation(format!(
+                "Invalid XML record tag name: {:?}",
+                self.record_tag
+            )));
+        }
+        for (key, value) in &record {
+            if !matches!(value, Value::Null) && !Self::is_valid_xml_name(key) {
+                return Err(DataGenieError::Validation(format!(
+                    "Invalid XML element name for record field: {:?}",
+                    key
+                )));
+            }
+        }
+
         self.ensure_stream().await?;
 
         if self.is_first_record {
@@ -131,6 +168,16 @@ impl DataWriter for XMLWriter {
         }
 
         self.sink.finalize().await?;
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
+        self.output_stream = None;
+        self.sink.abort().await?;
         Ok(())
     }
 }

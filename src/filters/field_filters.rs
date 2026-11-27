@@ -2,6 +2,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::sync::Arc;
 
+use crate::core::error::{DataGenieError, Result};
 use crate::core::traits::{DataRecord, value_to_f64, value_to_string};
 
 pub type FieldFilterRule = Arc<dyn Fn(&Value) -> bool + Send + Sync>;
@@ -75,19 +76,38 @@ where
     V: Into<Value>,
 {
     let allowed: Vec<Value> = allowed_values.into_iter().map(Into::into).collect();
-    Arc::new(move |value: &Value| allowed.iter().any(|a| a == value))
+    Arc::new(move |value: &Value| {
+        allowed.iter().any(|a| {
+            if a == value {
+                return true;
+            }
+            if let (Value::Number(na), Value::Number(nb)) = (a, value)
+                && let (Some(fa), Some(fb)) = (na.as_f64(), nb.as_f64())
+            {
+                return fa == fb;
+            }
+            false
+        })
+    })
+}
+
+/// Fallible version of [`pattern_match`] that returns `Err` instead of panicking on invalid regex syntax.
+pub fn try_pattern_match(pattern: impl AsRef<str>) -> Result<FieldFilterRule> {
+    let re = Regex::new(pattern.as_ref())
+        .map_err(|e| DataGenieError::Config(format!("Invalid regex pattern {:?}: {}", pattern.as_ref(), e)))?;
+    Ok(Arc::new(move |value: &Value| match value {
+        Value::Null => false,
+        Value::String(s) => re.is_match(s),
+        other => {
+            let s = value_to_string(other);
+            re.is_match(&s)
+        }
+    }))
 }
 
 /// Checks that a field value (converted to string) matches the given regular expression pattern.
 pub fn pattern_match(pattern: impl AsRef<str>) -> FieldFilterRule {
-    let re = Regex::new(pattern.as_ref()).expect("Invalid regex pattern in pattern_match");
-    Arc::new(move |value: &Value| {
-        if value.is_null() {
-            return false;
-        }
-        let s = value_to_string(value);
-        re.is_match(&s)
-    })
+    try_pattern_match(pattern).expect("Invalid regex pattern in pattern_match")
 }
 
 /// Checks that a numeric field value is strictly greater than `threshold`.

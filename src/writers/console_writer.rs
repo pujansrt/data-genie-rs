@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use tokio::io::AsyncWriteExt;
 
 use crate::core::error::Result;
 use crate::core::traits::{DataRecord, DataWriter};
@@ -16,12 +17,17 @@ impl ConsoleWriter {
 #[async_trait]
 impl DataWriter for ConsoleWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
-        println!("{}", serde_json::to_string(&record)?);
+        let mut line = serde_json::to_vec(&record)?;
+        line.push(b'\n');
+        let mut stdout = tokio::io::stdout();
+        stdout.write_all(&line).await?;
         Ok(())
     }
 
     async fn close(&mut self) -> Result<()> {
-        println!("--- End of data stream ---");
+        let mut stdout = tokio::io::stdout();
+        stdout.write_all(b"--- End of data stream ---\n").await?;
+        stdout.flush().await?;
         Ok(())
     }
 }

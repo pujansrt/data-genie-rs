@@ -39,8 +39,8 @@ Bulk inserts or upserts records into SQL databases via the `SqlClient` trait.
   - `.with_transaction(true)`
 
 ## `CallbackWriter` & `BatchCallbackWriter`
-- **`CallbackWriter::new(|record| async move { ... })`**: Invokes an async closure for each record.
-- **`BatchCallbackWriter::new(100, |batch| async move { ... })`**: Invokes an async closure per batch of records.
+- **`CallbackWriter::new(|record| { ... })`** / **`CallbackWriter::new_async(|record| async move { ... })`**: Invokes a sync or async closure for each record.
+- **`BatchCallbackWriter::new(100, |batch| { ... })`** / **`BatchCallbackWriter::new_async(100, |batch| async move { ... })`**: Invokes a sync or async closure per batch of records.
 
 ## `MultiWriter`
 Broadcasts every record to multiple writers sequentially.

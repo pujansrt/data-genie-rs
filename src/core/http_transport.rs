@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::AsyncBufRead;
 use tokio_util::io::StreamReader;
 
@@ -12,8 +13,19 @@ use crate::core::error::{DataGenieError, Result};
 use crate::core::memory_transport::SharedVecWriter;
 use crate::core::traits::{BufferedByteReader, ByteReader, ByteWriter, DataSink, DataSource};
 
+const DEFAULT_HTTP_CONNECT_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 300;
+
+pub(crate) fn default_http_client() -> Client {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(DEFAULT_HTTP_CONNECT_TIMEOUT_SECS))
+        .timeout(Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS))
+        .build()
+        .unwrap_or_else(|_| Client::new())
+}
+
 fn parse_method(method: Option<&str>, default: &str) -> Result<Method> {
-    let method_str = method.unwrap_or(default);
+    let method_str = method.unwrap_or(default).trim().to_ascii_uppercase();
     Method::from_bytes(method_str.as_bytes()).map_err(|e| DataGenieError::Http(format!("Invalid HTTP method {}: {}", method_str, e)))
 }
 
@@ -58,8 +70,14 @@ impl HttpSource {
         Self {
             url: url.into(),
             options,
-            client: Client::new(),
+            client: default_http_client(),
         }
+    }
+
+    /// Overrides the underlying `reqwest::Client` (e.g., to share a connection pool or custom timeouts).
+    pub fn with_client(mut self, client: Client) -> Self {
+        self.client = client;
+        self
     }
 
     async fn send_request(&self) -> Result<Response> {
@@ -146,8 +164,14 @@ impl HttpSink {
             url: url.into(),
             options,
             buffer: Arc::new(Mutex::new(Vec::new())),
-            client: Client::new(),
+            client: default_http_client(),
         }
+    }
+
+    /// Overrides the underlying `reqwest::Client` (e.g., to share a connection pool or custom timeouts).
+    pub fn with_client(mut self, client: Client) -> Self {
+        self.client = client;
+        self
     }
 }
 
@@ -159,13 +183,17 @@ impl DataSink for HttpSink {
 
     async fn finalize(&mut self) -> Result<()> {
         let payload = {
-            let mut guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            std::mem::take(&mut *guard)
+            let guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            guard.clone()
         };
 
         let method = parse_method(self.options.method.as_deref(), "POST")?;
 
-        let mut req = self.client.request(method, &self.url).header("Content-Type", "application/octet-stream");
+        let mut req = self.client.request(method, &self.url);
+        let has_content_type = self.options.headers.keys().any(|k| k.eq_ignore_ascii_case("content-type"));
+        if !has_content_type {
+            req = req.header("Content-Type", "application/octet-stream");
+        }
         for (k, v) in &self.options.headers {
             req = req.header(k, v);
         }
@@ -177,6 +205,14 @@ impl DataSink for HttpSink {
             return Err(DataGenieError::Http(format!("HttpSink: {} returned {}. {}", self.url, status, text)));
         }
 
+        let mut guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        let mut guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
         Ok(())
     }
 

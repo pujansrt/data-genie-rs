@@ -4,7 +4,7 @@ use futures::TryStreamExt;
 use object_store::aws::AmazonS3Builder;
 use object_store::memory::InMemory;
 use object_store::path::Path as ObjectPath;
-use object_store::{ObjectStore, PutPayload};
+use object_store::{Attribute, Attributes, ObjectStore, ObjectStoreExt, PutOptions, PutPayload};
 use std::borrow::Cow;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncBufRead;
@@ -135,11 +135,25 @@ impl DataSink for S3Sink {
 
     async fn finalize(&mut self) -> Result<()> {
         let data = {
-            let mut guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
-            Bytes::from(std::mem::take(&mut *guard))
+            let guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+            Bytes::from(guard.clone())
         };
         let path = ObjectPath::from(self.key.as_str());
-        self.store.put(&path, PutPayload::from(data)).await?;
+        let mut attributes = Attributes::new();
+        attributes.insert(Attribute::ContentType, self.content_type.clone().into());
+        let opts = PutOptions {
+            attributes,
+            ..Default::default()
+        };
+        self.store.put_opts(&path, PutPayload::from(data), opts).await?;
+        let mut guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        let mut guard = self.buffer.lock().unwrap_or_else(|e| e.into_inner());
+        guard.clear();
         Ok(())
     }
 

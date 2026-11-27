@@ -26,7 +26,10 @@ pub struct ValidatingReader<R: DataReader> {
     messages: Arc<Mutex<Vec<ValidationMessage>>>,
     throw_exception_on_failure: bool,
     dlq_writer: Option<SharedWriter>,
+    owns_dlq: bool,
     skipped_records: Arc<AtomicUsize>,
+    local_dlq_records: Arc<AtomicUsize>,
+    rejected_without_dlq: Arc<AtomicUsize>,
 }
 
 impl<R: DataReader> ValidatingReader<R> {
@@ -37,7 +40,10 @@ impl<R: DataReader> ValidatingReader<R> {
             messages: Arc::new(Mutex::new(Vec::new())),
             throw_exception_on_failure: false,
             dlq_writer: None,
+            owns_dlq: false,
             skipped_records: Arc::new(AtomicUsize::new(0)),
+            local_dlq_records: Arc::new(AtomicUsize::new(0)),
+            rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -62,12 +68,13 @@ impl<R: DataReader> ValidatingReader<R> {
     pub fn with_dlq<W: Into<SharedWriter>>(mut self, writer: W) -> Self {
         let shared = writer.into();
         self.dlq_writer = Some(shared.clone());
-        self.reader.set_dlq(shared);
+        self.owns_dlq = true;
+        self.reader.propagate_dlq(shared);
         self
     }
 
     pub fn get_messages(&self) -> Vec<ValidationMessage> {
-        self.messages.lock().unwrap().clone()
+        self.messages.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -78,26 +85,23 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
         let messages_store = Arc::clone(&self.messages);
         let throw_on_failure = self.throw_exception_on_failure;
         let dlq_writer = self.dlq_writer.clone();
+        let owns_dlq = self.owns_dlq;
         let skipped_records = Arc::clone(&self.skipped_records);
+        let local_dlq_records = Arc::clone(&self.local_dlq_records);
+        let rejected_without_dlq = Arc::clone(&self.rejected_without_dlq);
 
         Box::pin(try_stream! {
             while let Some(item) = upstream.next().await {
                 let record_opt = match item {
                     Ok(opt) => opt,
                     Err(err) => {
-                        if let Some(ref dlq) = dlq_writer {
-                            let mut err_rec = DataRecord::new();
-                            err_rec.insert("_error".to_string(), Value::String(err.to_string()));
-                            err_rec.insert("_type".to_string(), Value::String("upstream_error".to_string()));
-                            dlq.write_dlq(err_rec).await?;
-                            break;
-                        } else {
-                            if let Some(ref dlq) = dlq_writer {
-                                let _ = dlq.close_dlq().await;
-                            }
-                            Err(err)?;
-                            unreachable!()
+                        if owns_dlq
+                            && let Some(ref dlq) = dlq_writer
+                        {
+                            let _ = dlq.close_dlq().await;
                         }
+                        Err(err)?;
+                        unreachable!()
                     }
                 };
 
@@ -117,7 +121,9 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
 
                 if !is_valid {
                     if throw_on_failure {
-                        if let Some(ref dlq) = dlq_writer {
+                        if owns_dlq
+                            && let Some(ref dlq) = dlq_writer
+                        {
                             let _ = dlq.close_dlq().await;
                         }
                         Err(DataGenieError::Validation(format!(
@@ -127,26 +133,31 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
                     }
 
                     {
-                        let mut guard = messages_store.lock().unwrap();
+                        let mut guard = messages_store.lock().unwrap_or_else(|e| e.into_inner());
                         guard.extend(record_messages.clone());
                     }
 
                     if let Some(ref dlq) = dlq_writer {
-                        let mut dlq_rec = record.clone();
+                        let mut dlq_rec = record;
                         let errs: Vec<Value> = record_messages
                             .iter()
                             .map(|m| Value::String(m.message.clone()))
                             .collect();
                         dlq_rec.insert("_errors".to_string(), json!(errs));
                         dlq.write_dlq(dlq_rec).await?;
-                        continue;
+                        local_dlq_records.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                     }
+                    continue;
                 }
 
                 yield Some(record);
             }
 
-            if let Some(ref dlq) = dlq_writer {
+            if owns_dlq
+                && let Some(ref dlq) = dlq_writer
+            {
                 dlq.close_dlq().await?;
             }
         })
@@ -154,7 +165,16 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
 
     fn set_dlq(&mut self, writer: SharedWriter) {
         self.dlq_writer = Some(writer.clone());
-        self.reader.set_dlq(writer);
+        self.owns_dlq = true;
+        self.reader.propagate_dlq(writer);
+    }
+
+    fn propagate_dlq(&mut self, writer: SharedWriter) {
+        if self.dlq_writer.is_none() {
+            self.dlq_writer = Some(writer.clone());
+            self.owns_dlq = false;
+            self.reader.propagate_dlq(writer);
+        }
     }
 
     fn skipped_record_count(&self) -> usize {
@@ -162,13 +182,13 @@ impl<R: DataReader + 'static> DataReader for ValidatingReader<R> {
     }
 
     fn dlq_record_count(&self) -> usize {
-        self.reader
-            .dlq_record_count()
-            .max(self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count))
+        self.reader.dlq_record_count() + self.local_dlq_records.load(Ordering::Relaxed)
     }
 
     fn rejected_record_count(&self) -> usize {
-        self.reader.rejected_record_count().max(self.dlq_record_count())
+        self.reader.rejected_record_count()
+            + self.local_dlq_records.load(Ordering::Relaxed)
+            + self.rejected_without_dlq.load(Ordering::Relaxed)
     }
 
     fn set_ignore_errors(&mut self, ignore: bool) {
@@ -219,10 +239,16 @@ impl FieldValidator {
         let rules = self.rules.clone();
         Arc::new(move |record: &DataRecord, messages: &mut Vec<ValidationMessage>| {
             let val = record.get(&field_name).unwrap_or(&Value::Null);
+            let start_idx = messages.len();
             let mut is_valid = true;
             for rule in &rules {
                 if !rule(val, messages) {
                     is_valid = false;
+                }
+            }
+            for msg in &mut messages[start_idx..] {
+                if msg.record.is_empty() {
+                    msg.record = record.clone();
                 }
             }
             is_valid

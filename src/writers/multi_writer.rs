@@ -31,16 +31,42 @@ impl MultiWriter {
 #[async_trait]
 impl DataWriter for MultiWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
-        for writer in &mut self.writers {
-            writer.write(record.clone()).await?;
+        if let Some((last, rest)) = self.writers.split_last_mut() {
+            for writer in rest {
+                writer.write(record.clone()).await?;
+            }
+            last.write(record).await?;
         }
         Ok(())
     }
 
     async fn close(&mut self) -> Result<()> {
+        let mut first_err = None;
         for writer in &mut self.writers {
-            writer.close().await?;
+            if let Err(err) = writer.close().await
+                && first_err.is_none()
+            {
+                first_err = Some(err);
+            }
         }
-        Ok(())
+        match first_err {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        let mut first_err = None;
+        for writer in &mut self.writers {
+            if let Err(err) = writer.abort().await
+                && first_err.is_none()
+            {
+                first_err = Some(err);
+            }
+        }
+        match first_err {
+            Some(err) => Err(err),
+            None => Ok(()),
+        }
     }
 }

@@ -4,6 +4,9 @@ pub mod readers;
 pub mod transformers;
 pub mod writers;
 
+#[doc(hidden)]
+pub use serde_json;
+
 // Core exports
 pub use core::{
     BoxedReader, BufferedByteReader, ByteReader, ByteWriter, ConsoleLogger, DEFAULT_IO_BUFFER_CAPACITY, DataGenieError, DataReader, DataRecord, DataSink,
@@ -21,7 +24,7 @@ pub use core::{S3Sink, S3Source};
 // Filter exports
 pub use filters::{
     FieldFilter, FieldFilterRule, FilterExpression, FilteringReader, RecordFilterRule, between, greater_than, is_empty, is_not_null, is_type, less_than,
-    pattern_match, value_match,
+    pattern_match, try_pattern_match, value_match,
 };
 
 // Reader exports

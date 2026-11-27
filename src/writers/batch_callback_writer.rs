@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::core::error::Result;
+use crate::core::error::{DataGenieError, Result};
 use crate::core::traits::{DataRecord, DataWriter};
 
 type AsyncBatchCallback = Arc<dyn Fn(Vec<DataRecord>) -> Pin<Box<dyn Future<Output = Result<()>> + Send>> + Send + Sync>;
@@ -13,6 +13,7 @@ pub struct BatchCallbackWriter {
     batch_size: usize,
     batch: Vec<DataRecord>,
     callback: AsyncBatchCallback,
+    is_closed: bool,
 }
 
 impl BatchCallbackWriter {
@@ -21,9 +22,10 @@ impl BatchCallbackWriter {
         F: Fn(Vec<DataRecord>) + Send + Sync + 'static,
     {
         let cb = Arc::new(callback);
+        let effective_size = batch_size.max(1);
         Self {
-            batch_size: batch_size.max(1),
-            batch: Vec::new(),
+            batch_size: effective_size,
+            batch: Vec::with_capacity(effective_size),
             callback: Arc::new(move |batch: Vec<DataRecord>| {
                 let cb_ref = Arc::clone(&cb);
                 Box::pin(async move {
@@ -31,6 +33,7 @@ impl BatchCallbackWriter {
                     Ok(())
                 })
             }),
+            is_closed: false,
         }
     }
 
@@ -40,20 +43,35 @@ impl BatchCallbackWriter {
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let cb = Arc::new(callback);
+        let effective_size = batch_size.max(1);
         Self {
-            batch_size: batch_size.max(1),
-            batch: Vec::new(),
+            batch_size: effective_size,
+            batch: Vec::with_capacity(effective_size),
             callback: Arc::new(move |batch: Vec<DataRecord>| {
                 let cb_ref = Arc::clone(&cb);
                 Box::pin(async move { cb_ref(batch).await })
             }),
+            is_closed: false,
         }
     }
 
-    async fn flush(&mut self) -> Result<()> {
+    async fn flush(&mut self, from_write: bool) -> Result<()> {
         if !self.batch.is_empty() {
-            let current_batch = std::mem::take(&mut self.batch);
-            (self.callback)(current_batch).await?;
+            // Keep self.batch intact until the callback succeeds so retries never lose earlier
+            // buffered records. On write() failure, pop only the just-pushed record so retrying
+            // write(record) replays the exact batch without duplicates.
+            let payload = self.batch.clone();
+            match (self.callback)(payload).await {
+                Ok(()) => {
+                    self.batch.clear();
+                }
+                Err(err) => {
+                    if from_write {
+                        self.batch.pop();
+                    }
+                    return Err(err);
+                }
+            }
         }
         Ok(())
     }
@@ -62,14 +80,28 @@ impl BatchCallbackWriter {
 #[async_trait]
 impl DataWriter for BatchCallbackWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
+        if self.is_closed {
+            return Err(DataGenieError::Other("Writer is already closed".to_string()));
+        }
         self.batch.push(record);
         if self.batch.len() >= self.batch_size {
-            self.flush().await?;
+            self.flush(true).await?;
         }
         Ok(())
     }
 
     async fn close(&mut self) -> Result<()> {
-        self.flush().await
+        if self.is_closed {
+            return Ok(());
+        }
+        self.flush(false).await?;
+        self.is_closed = true;
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        self.is_closed = true;
+        self.batch.clear();
+        Ok(())
     }
 }

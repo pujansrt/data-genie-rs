@@ -1,9 +1,12 @@
 use async_trait::async_trait;
-use rust_xlsxwriter::Workbook;
+use rust_xlsxwriter::{Format, Workbook};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
-use crate::core::error::Result;
+const EXCEL_MAX_COLUMNS: usize = 16_384;
+const EXCEL_MAX_ROWS: usize = 1_048_576;
+
+use crate::core::error::{DataGenieError, Result};
 use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
 use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
@@ -28,6 +31,7 @@ pub struct XlsxWriter {
     options: XlsxWriterOptions,
     field_names: Vec<String>,
     records: Vec<DataRecord>,
+    is_closed: bool,
 }
 
 impl XlsxWriter {
@@ -41,6 +45,7 @@ impl XlsxWriter {
             options,
             field_names: Vec::new(),
             records: Vec::new(),
+            is_closed: false,
         }
     }
 }
@@ -48,14 +53,38 @@ impl XlsxWriter {
 #[async_trait]
 impl DataWriter for XlsxWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
+        if self.is_closed {
+            return Err(DataGenieError::Other("Writer is already closed".to_string()));
+        }
+        if record.is_empty() {
+            return Ok(());
+        }
         if self.field_names.is_empty() {
+            if record.len() > EXCEL_MAX_COLUMNS {
+                return Err(DataGenieError::Validation(format!(
+                    "XLSX supports at most {} columns, got {}",
+                    EXCEL_MAX_COLUMNS,
+                    record.len()
+                )));
+            }
             self.field_names = record.keys().cloned().collect();
+        }
+        if self.records.len() + 1 >= EXCEL_MAX_ROWS {
+            return Err(DataGenieError::Validation(format!(
+                "XLSX supports at most {} rows including header",
+                EXCEL_MAX_ROWS
+            )));
         }
         self.records.push(record);
         Ok(())
     }
 
     async fn close(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
+
         if self.records.is_empty() && self.field_names.is_empty() {
             return Ok(());
         }
@@ -64,14 +93,31 @@ impl DataWriter for XlsxWriter {
         let worksheet = workbook.add_worksheet();
         worksheet.set_name(&self.options.sheet_name)?;
 
+        let header_format = if self.options.use_styles {
+            Some(Format::new().set_bold())
+        } else {
+            None
+        };
+
         for (col_idx, name) in self.field_names.iter().enumerate() {
-            worksheet.write_string(0, col_idx as u16, name)?;
+            let excel_col = u16::try_from(col_idx).map_err(|_| {
+                DataGenieError::Validation(format!("XLSX column index {} exceeds u16 limit", col_idx))
+            })?;
+            if let Some(ref fmt) = header_format {
+                worksheet.write_string_with_format(0, excel_col, name, fmt)?;
+            } else {
+                worksheet.write_string(0, excel_col, name)?;
+            }
         }
 
         for (row_idx, record) in self.records.iter().enumerate() {
-            let excel_row = (row_idx + 1) as u32;
+            let excel_row = u32::try_from(row_idx + 1).map_err(|_| {
+                DataGenieError::Validation(format!("XLSX row index {} exceeds u32 limit", row_idx + 1))
+            })?;
             for (col_idx, field_name) in self.field_names.iter().enumerate() {
-                let excel_col = col_idx as u16;
+                let excel_col = u16::try_from(col_idx).map_err(|_| {
+                    DataGenieError::Validation(format!("XLSX column index {} exceeds u16 limit", col_idx))
+                })?;
                 match record.get(field_name) {
                     None | Some(Value::Null) => {}
                     Some(Value::Bool(b)) => {
@@ -92,12 +138,13 @@ impl DataWriter for XlsxWriter {
         }
 
         let xlsx_bytes = workbook.save_to_buffer()?;
+        self.records.clear();
 
         if let Some(path) = self.sink.as_file_path() {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)?;
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                std::fs::create_dir_all(parent)?;
             }
             std::fs::write(path, &xlsx_bytes)?;
         } else {
@@ -108,6 +155,16 @@ impl DataWriter for XlsxWriter {
             self.sink.finalize().await?;
         }
 
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
+        self.records.clear();
+        self.sink.abort().await?;
         Ok(())
     }
 }

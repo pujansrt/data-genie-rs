@@ -41,14 +41,14 @@ use data_genie::{BatchCallbackWriter, CSVReader, CallbackWriter, Job};
 
 fn main() -> data_genie::Result<()> {
     // Per-record async callback
-    let writer = CallbackWriter::new(|record| async move {
+    let writer = CallbackWriter::new_async(|record| async move {
         println!("Record: {:?}", record);
         Ok(())
     });
     Job::run_blocking(CSVReader::new("users.csv"), writer)?;
 
     // Batch async callback (groups of 100 records)
-    let batch_writer = BatchCallbackWriter::new(100, |batch| async move {
+    let batch_writer = BatchCallbackWriter::new_async(100, |batch| async move {
         println!("Flushing batch of {} records", batch.len());
         Ok(())
     });

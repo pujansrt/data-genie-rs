@@ -192,4 +192,15 @@ impl DataWriter for JsonWriter {
         self.sink.finalize().await?;
         Ok(())
     }
+
+    async fn abort(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
+        self.write_buf.clear();
+        self.output_stream = None;
+        self.sink.abort().await?;
+        Ok(())
+    }
 }

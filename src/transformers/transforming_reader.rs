@@ -80,6 +80,10 @@ impl<R: DataReader + 'static> DataReader for TransformingReader<R> {
         self.reader.set_dlq(writer);
     }
 
+    fn propagate_dlq(&mut self, writer: SharedWriter) {
+        self.reader.propagate_dlq(writer);
+    }
+
     fn skipped_record_count(&self) -> usize {
         self.reader.skipped_record_count() + self.skipped_records.load(Ordering::Relaxed)
     }

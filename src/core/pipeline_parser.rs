@@ -239,7 +239,7 @@ pub struct PipelineParser;
 impl PipelineParser {
     /// Validates a YAML pipeline definition without running it.
     pub fn validate_yaml(yaml_content: &str) -> Result<()> {
-        let config: PipelineConfig = serde_yaml::from_str(yaml_content)?;
+        let config: PipelineConfig = serde_yaml_ng::from_str(yaml_content)?;
         config.validate()
     }
 
@@ -251,7 +251,8 @@ impl PipelineParser {
     }
 
     pub fn run_blocking<P: AsRef<Path>>(config_path: P) -> Result<JobMetrics> {
-        crate::core::job::block_on(Self::run(config_path))
+        let path = config_path.as_ref().to_path_buf();
+        crate::core::job::block_on_send(Self::run(path))
     }
 
     pub async fn run<P: AsRef<Path>>(config_path: P) -> Result<JobMetrics> {
@@ -265,7 +266,7 @@ impl PipelineParser {
     }
 
     pub async fn run_from_yaml(yaml_content: &str) -> Result<JobMetrics> {
-        let config: PipelineConfig = serde_yaml::from_str(yaml_content)?;
+        let config: PipelineConfig = serde_yaml_ng::from_str(yaml_content)?;
         config.validate()?;
         let Some(pipeline) = config.pipeline else {
             return Err(DataGenieError::Config("Invalid config: \"pipeline\" section is missing".to_string()));

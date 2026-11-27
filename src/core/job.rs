@@ -13,9 +13,48 @@ use crate::core::traits::{ConsoleLogger, DataReader, DataRecord, DataWriter, Log
 
 /// Runs a future to completion on a multi-threaded Tokio runtime without requiring `#[tokio::main]`
 /// or a direct `tokio` dependency in downstream crates.
-pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
+pub fn block_on<F: Future>(future: F) -> F::Output {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| handle.block_on(future))
+        match handle.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(|| handle.block_on(future)),
+            _ => panic!(
+                "data_genie::block_on() cannot run an arbitrary non-Send future inside a current_thread Tokio runtime. \
+                 Await the async method directly, use a multi-threaded runtime (e.g., #[tokio::test(flavor = \"multi_thread\")]), \
+                 or use Job::run_blocking / Job::execute_blocking."
+            ),
+        }
+    } else {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to build Tokio runtime")
+            .block_on(future)
+    }
+}
+
+/// Runs a `Send` future to completion from any context, including inside a `current_thread`
+/// Tokio runtime (such as default `#[tokio::test]`).
+pub(crate) fn block_on_send<F>(future: F) -> F::Output
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        match handle.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(|| handle.block_on(future)),
+            _ => std::thread::scope(|scope| {
+                scope
+                    .spawn(move || {
+                        tokio::runtime::Builder::new_multi_thread()
+                            .enable_all()
+                            .build()
+                            .expect("Failed to build Tokio runtime")
+                            .block_on(future)
+                    })
+                    .join()
+                    .expect("Background Tokio runtime thread panicked")
+            }),
+        }
     } else {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -277,9 +316,21 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
             let _ = std::io::stdout().flush();
         }
 
-        let close_res = self.writer.close().await;
-        run_result?;
-        close_res?;
+        match run_result {
+            Ok(()) => {
+                if let Err(err) = self.writer.close().await {
+                    let msg = err.to_string();
+                    for cb in &mut self.on_error {
+                        cb(&msg, None);
+                    }
+                    return Err(err);
+                }
+            }
+            Err(err) => {
+                let _ = self.writer.abort().await;
+                return Err(err);
+            }
+        }
 
         let end_time = Utc::now();
         let duration_ms = start_instant.elapsed().as_millis() as u64;
@@ -305,7 +356,7 @@ impl<R: DataReader, W: DataWriter> Job<R, W> {
     /// Synchronous convenience wrapper around `execute()` that manages the async runtime internally.
     /// Allows running jobs from a normal `fn main()` without `#[tokio::main]`.
     pub fn execute_blocking(&mut self) -> Result<JobMetrics> {
-        block_on(self.execute())
+        block_on_send(self.execute())
     }
 
     /// Consumes the `Job` and runs it to completion, returning both the `JobMetrics` and the writer.
@@ -347,7 +398,7 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
 
     /// Synchronous static convenience method to run a job from a standard `fn main()` without `#[tokio::main]`.
     pub fn run_blocking<R: DataReader, W: DataWriter>(reader: R, writer: W) -> Result<JobMetrics> {
-        block_on(Self::run(reader, writer))
+        block_on_send(Self::run(reader, writer))
     }
 
     /// Static convenience method to run a job with custom `JobOptions`.
@@ -365,12 +416,14 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
 
         log.info(&format!("--- Previewing first {} records ---", max_records));
 
-        let mut stream = reader.read();
-        while let Some(item) = stream.next().await {
-            if let Some(record) = item? {
-                preview_records.push(record);
-                if preview_records.len() >= max_records {
-                    break;
+        if max_records > 0 {
+            let mut stream = reader.read();
+            while let Some(item) = stream.next().await {
+                if let Some(record) = item? {
+                    preview_records.push(record);
+                    if preview_records.len() >= max_records {
+                        break;
+                    }
                 }
             }
         }
@@ -393,59 +446,64 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
         let table_name = options.table_name.unwrap_or_else(|| "inferred_table".to_string());
         let interface_name = options.interface_name.unwrap_or_else(|| "InferredRecord".to_string());
 
-        let mut field_stats: IndexMap<String, (HashSet<String>, bool)> = IndexMap::new();
-        let mut count = 0;
+        let mut field_stats: IndexMap<String, (HashSet<&'static str>, bool, usize)> = IndexMap::new();
+        let mut count = 0usize;
 
-        let mut stream = reader.read();
-        while let Some(item) = stream.next().await {
-            let Some(record) = item? else {
-                continue;
-            };
+        if sample_size > 0 {
+            let mut stream = reader.read();
+            while let Some(item) = stream.next().await {
+                let Some(record) = item? else {
+                    continue;
+                };
 
-            for (key, value) in &record {
-                let entry = field_stats.entry(key.clone()).or_insert_with(|| (HashSet::new(), false));
+                for (key, value) in &record {
+                    let entry = field_stats.entry(key.clone()).or_insert_with(|| (HashSet::new(), false, 0));
+                    entry.2 += 1;
 
-                match value {
-                    Value::Null => {
-                        entry.1 = true;
-                    }
-                    Value::Bool(_) => {
-                        entry.0.insert("boolean".to_string());
-                    }
-                    Value::Number(_) => {
-                        entry.0.insert("number".to_string());
-                    }
-                    Value::String(s) => {
-                        if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
-                            entry.0.insert("date".to_string());
-                        } else {
-                            entry.0.insert("string".to_string());
+                    match value {
+                        Value::Null => {
+                            entry.1 = true;
+                        }
+                        Value::Bool(_) => {
+                            entry.0.insert("boolean");
+                        }
+                        Value::Number(_) => {
+                            entry.0.insert("number");
+                        }
+                        Value::String(s) => {
+                            if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
+                                entry.0.insert("date");
+                            } else {
+                                entry.0.insert("string");
+                            }
+                        }
+                        Value::Array(_) | Value::Object(_) => {
+                            entry.0.insert("object");
                         }
                     }
-                    Value::Array(_) | Value::Object(_) => {
-                        entry.0.insert("object".to_string());
-                    }
                 }
-            }
 
-            count += 1;
-            if count >= sample_size {
-                break;
+                count += 1;
+                if count >= sample_size {
+                    break;
+                }
             }
         }
 
         let mut fields = IndexMap::new();
-        for (key, (types, nullable)) in field_stats {
-            let field_type = if types.contains("date") {
-                "date"
-            } else if types.contains("object") {
-                "object"
-            } else if types.contains("number") {
-                "number"
-            } else if types.contains("boolean") {
-                "boolean"
-            } else {
-                "string"
+        for (key, (types, explicit_null, seen_count)) in field_stats {
+            let nullable = explicit_null || seen_count < count;
+            let field_type = match types.len() {
+                0 => "string",
+                1 => *types.iter().next().unwrap(),
+                _ => {
+                    // Widen mixed types instead of narrowing to the most specific type.
+                    if types.contains("object") {
+                        "object"
+                    } else {
+                        "string"
+                    }
+                }
             };
             fields.insert(
                 key,
@@ -470,10 +528,73 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
         })
     }
 
+    fn sanitize_rust_ident(raw: &str, is_type: bool) -> String {
+        const RUST_KEYWORDS: &[&str] = &[
+            "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern", "false", "fn", "for", "if",
+            "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self", "static", "struct",
+            "super", "trait", "true", "type", "unsafe", "use", "where", "while", "abstract", "become", "box", "do", "final", "macro",
+            "override", "priv", "try", "typeof", "unsized", "virtual", "yield",
+        ];
+
+        let mut ident = String::with_capacity(raw.len());
+        for ch in raw.chars() {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ident.push(ch);
+            } else {
+                ident.push('_');
+            }
+        }
+        if ident.is_empty() {
+            ident = if is_type { "InferredRecord".to_string() } else { "field".to_string() };
+        }
+        if ident.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            ident.insert(0, '_');
+        }
+        if RUST_KEYWORDS.contains(&ident.as_str()) {
+            ident.push('_');
+        }
+        ident
+    }
+
+    fn is_simple_js_ident(s: &str) -> bool {
+        let mut chars = s.chars();
+        match chars.next() {
+            Some(c) if c.is_ascii_alphabetic() || c == '_' || c == '$' => {}
+            _ => return false,
+        }
+        chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    }
+
+    fn format_js_key(key: &str) -> String {
+        if Self::is_simple_js_ident(key) {
+            key.to_string()
+        } else {
+            serde_json::to_string(key).unwrap_or_else(|_| format!("\"{}\"", key))
+        }
+    }
+
+    fn format_sql_ident(name: &str) -> String {
+        const SQL_KEYWORDS: &[&str] = &[
+            "select", "from", "where", "order", "group", "table", "user", "index", "key", "value", "values", "insert", "update", "delete",
+            "create", "drop", "alter", "default", "check", "primary", "foreign", "references", "null", "not", "and", "or", "in", "as",
+            "by", "limit", "offset", "type", "status", "date", "time", "timestamp",
+        ];
+        let is_plain = !name.is_empty()
+            && name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !SQL_KEYWORDS.contains(&name.to_ascii_lowercase().as_str());
+        if is_plain {
+            name.to_string()
+        } else {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        }
+    }
+
     fn generate_rust(name: &str, fields: &IndexMap<String, FieldSchemaInfo>) -> String {
+        let struct_name = Self::sanitize_rust_ident(name, true);
         let mut lines = vec![
             "#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]".to_string(),
-            format!("pub struct {} {{", name),
+            format!("pub struct {} {{", struct_name),
         ];
         for (key, info) in fields {
             let base_type = match info.field_type.as_str() {
@@ -488,14 +609,20 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
             } else {
                 base_type.to_string()
             };
-            lines.push(format!("    pub {}: {},", key, rust_type));
+            let field_ident = Self::sanitize_rust_ident(key, false);
+            if field_ident != *key {
+                let escaped_orig = serde_json::to_string(key).unwrap_or_else(|_| format!("\"{}\"", key));
+                lines.push(format!("    #[serde(rename = {})]", escaped_orig));
+            }
+            lines.push(format!("    pub {}: {},", field_ident, rust_type));
         }
         lines.push("}".to_string());
         lines.join("\n")
     }
 
     fn generate_typescript(name: &str, fields: &IndexMap<String, FieldSchemaInfo>) -> String {
-        let mut lines = vec![format!("export interface {} {{", name)];
+        let iface_name = Self::sanitize_rust_ident(name, true);
+        let mut lines = vec![format!("export interface {} {{", iface_name)];
         for (key, info) in fields {
             let ts_type = match info.field_type.as_str() {
                 "date" => "Date",
@@ -504,7 +631,7 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
             };
             let optional = if info.nullable { "?" } else { "" };
             let null_union = if info.nullable { " | null" } else { "" };
-            lines.push(format!("  {}{}: {}{};", key, optional, ts_type, null_union));
+            lines.push(format!("  {}{}: {}{};", Self::format_js_key(key), optional, ts_type, null_union));
         }
         lines.push("}".to_string());
         lines.join("\n")
@@ -524,7 +651,7 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
                 "object" => "z.any()",
                 _ => "z.string()",
             };
-            let mut line = format!("  {}: {}", key, zod_type);
+            let mut line = format!("  {}: {}", Self::format_js_key(key), zod_type);
             if info.nullable {
                 line.push_str(".nullable().optional()");
             }
@@ -536,7 +663,7 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
     }
 
     fn generate_sql(table_name: &str, fields: &IndexMap<String, FieldSchemaInfo>) -> String {
-        let mut lines = vec![format!("CREATE TABLE {} (", table_name)];
+        let mut lines = vec![format!("CREATE TABLE {} (", Self::format_sql_ident(table_name))];
         let cols: Vec<String> = fields
             .iter()
             .map(|(key, info)| {
@@ -548,7 +675,7 @@ impl Job<crate::readers::MemoryReader, crate::writers::MemoryWriter> {
                     _ => "VARCHAR(255)",
                 };
                 let not_null = if info.nullable { "" } else { " NOT NULL" };
-                format!("  {} {}{}", key, sql_type, not_null)
+                format!("  {} {}{}", Self::format_sql_ident(key), sql_type, not_null)
             })
             .collect();
         lines.push(cols.join(",\n"));

@@ -17,26 +17,26 @@ impl MemoryWriter {
     }
 
     pub fn get_records(&self) -> Vec<DataRecord> {
-        self.records.lock().unwrap().clone()
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn len(&self) -> usize {
-        self.records.lock().unwrap().len()
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.records.lock().unwrap().is_empty()
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).is_empty()
     }
 
     pub fn clear(&self) {
-        self.records.lock().unwrap().clear();
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
 #[async_trait]
 impl DataWriter for MemoryWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
-        self.records.lock().unwrap().push(record);
+        self.records.lock().unwrap_or_else(|e| e.into_inner()).push(record);
         Ok(())
     }
 

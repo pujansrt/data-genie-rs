@@ -1,10 +1,11 @@
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+use crate::core::error::Result;
 use crate::core::expr::Expr;
 use crate::core::traits::{DataRecord, value_to_string};
 use crate::transformers::transforming_reader::RecordTransformation;
@@ -50,7 +51,11 @@ impl BasicFieldTransformer {
                     let trimmed = s.trim();
                     if let Ok(parsed) = trimmed.parse::<i64>() {
                         record.insert(field.clone(), Value::Number(Number::from(parsed)));
-                    } else if let Ok(parsed_float) = trimmed.parse::<f64>() {
+                    } else if let Ok(parsed_float) = trimmed.parse::<f64>()
+                        && parsed_float.is_finite()
+                        && parsed_float >= (i64::MIN as f64)
+                        && parsed_float < (i64::MAX as f64)
+                    {
                         record.insert(field.clone(), Value::Number(Number::from(parsed_float as i64)));
                     }
                 }
@@ -64,10 +69,7 @@ impl BasicFieldTransformer {
         let default_val = default_value.into();
         Arc::new(move |mut record: DataRecord| {
             for field in &fields {
-                let is_null_or_missing = match record.get(field) {
-                    None | Some(Value::Null) => true,
-                    _ => false,
-                };
+                let is_null_or_missing = matches!(record.get(field), None | Some(Value::Null));
                 if is_null_or_missing {
                     record.insert(field.clone(), default_val.clone());
                 }
@@ -81,22 +83,26 @@ impl BasicFieldTransformer {
         let fmt = format.into();
         Arc::new(move |mut record: DataRecord| {
             for field in &fields {
-                if let Some(Value::String(s)) = record.get(field).cloned() {
-                    let parsed_iso = if !fmt.is_empty() {
-                        NaiveDateTime::parse_from_str(&s, &fmt)
-                            .map(|ndt| ndt.and_utc().to_rfc3339())
-                            .or_else(|_| NaiveDate::parse_from_str(&s, &fmt).map(|nd| nd.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339()))
+                let parsed_iso = if let Some(Value::String(s)) = record.get(field) {
+                    let trimmed = s.trim();
+                    if !fmt.is_empty() {
+                        DateTime::parse_from_str(trimmed, &fmt)
+                            .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
+                            .or_else(|_| NaiveDateTime::parse_from_str(trimmed, &fmt).map(|ndt| ndt.and_utc().to_rfc3339()))
+                            .or_else(|_| NaiveDate::parse_from_str(trimmed, &fmt).map(|nd| nd.and_time(NaiveTime::MIN).and_utc().to_rfc3339()))
                             .ok()
                     } else {
-                        DateTime::parse_from_rfc3339(&s)
+                        DateTime::parse_from_rfc3339(trimmed)
                             .map(|dt| dt.with_timezone(&Utc).to_rfc3339())
-                            .or_else(|_| NaiveDate::parse_from_str(&s, "%Y-%m-%d").map(|nd| nd.and_hms_opt(0, 0, 0).unwrap().and_utc().to_rfc3339()))
+                            .or_else(|_| NaiveDate::parse_from_str(trimmed, "%Y-%m-%d").map(|nd| nd.and_time(NaiveTime::MIN).and_utc().to_rfc3339()))
                             .ok()
-                    };
-
-                    if let Some(iso) = parsed_iso {
-                        record.insert(field.clone(), Value::String(iso));
                     }
+                } else {
+                    None
+                };
+
+                if let Some(iso) = parsed_iso {
+                    record.insert(field.clone(), Value::String(iso));
                 }
             }
             record
@@ -131,22 +137,26 @@ impl RenameField {
         let new_name = self.new_name.clone();
         let allow_dup = self.allow_duplicate_field_names;
 
-        Arc::new(move |mut record: DataRecord| {
-            if old_name == new_name {
+        Arc::new(move |record: DataRecord| {
+            if old_name == new_name || !record.contains_key(&old_name) {
                 return record;
             }
-            if record.contains_key(&old_name) {
-                if record.contains_key(&new_name) && !allow_dup {
-                    eprintln!(
-                        "Warning: Field \"{}\" already exists. Renaming \"{}\" to \"{}\" will overwrite existing data.",
-                        new_name, old_name, new_name
-                    );
-                }
-                if let Some(val) = record.shift_remove(&old_name) {
-                    record.insert(new_name.clone(), val);
+            if record.contains_key(&new_name) && !allow_dup {
+                // Preserve existing target field when duplicates/overwrites are disallowed.
+                return record;
+            }
+            let mut renamed = DataRecord::with_capacity(record.len());
+            for (k, v) in record {
+                if k == old_name {
+                    renamed.insert(new_name.clone(), v);
+                } else if k == new_name {
+                    // Skip existing target key so the renamed field replaces it cleanly.
+                    continue;
+                } else {
+                    renamed.insert(k, v);
                 }
             }
-            record
+            renamed
         })
     }
 }
@@ -182,17 +192,42 @@ pub struct SetCalculatedField {
     field_name: String,
     expression: String,
     compiled: Option<Expr>,
+    parse_error: Option<String>,
 }
 
 impl SetCalculatedField {
     pub fn new(field_name: impl Into<String>, expression: impl Into<String>) -> Self {
         let expr_str = expression.into();
-        let compiled = Expr::parse(&expr_str).ok();
+        let (compiled, parse_error) = match Expr::parse(&expr_str) {
+            Ok(ast) => (Some(ast), None),
+            Err(err) => (None, Some(err.to_string())),
+        };
         Self {
             field_name: field_name.into(),
             expression: expr_str,
             compiled,
+            parse_error,
         }
+    }
+
+    /// Fallible constructor that returns an error immediately if `expression` has invalid syntax.
+    pub fn try_new(field_name: impl Into<String>, expression: impl Into<String>) -> Result<Self> {
+        let expr_str = expression.into();
+        let compiled = Expr::parse(&expr_str)?;
+        Ok(Self {
+            field_name: field_name.into(),
+            expression: expr_str,
+            compiled: Some(compiled),
+            parse_error: None,
+        })
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.compiled.is_some()
+    }
+
+    pub fn parse_error(&self) -> Option<&str> {
+        self.parse_error.as_deref()
     }
 
     pub fn expression(&self) -> &str {
@@ -203,10 +238,10 @@ impl SetCalculatedField {
         let field_name = self.field_name.clone();
         let compiled = self.compiled.clone();
         Arc::new(move |mut record: DataRecord| {
-            if let Some(ast) = &compiled {
-                if let Ok(val) = ast.eval(&record) {
-                    record.insert(field_name.clone(), val);
-                }
+            if let Some(ast) = &compiled
+                && let Ok(val) = ast.eval(&record)
+            {
+                record.insert(field_name.clone(), val);
             }
             record
         })
@@ -331,11 +366,18 @@ impl MaskStrategy {
 #[derive(Debug, Clone, Default)]
 pub struct PIIMaskingTransformer {
     fields: IndexMap<String, MaskStrategy>,
+    salt: Option<String>,
 }
 
 impl PIIMaskingTransformer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Configures a salt/pepper string prepended during [`MaskStrategy::Hash`] SHA-256 hashing.
+    pub fn with_salt(mut self, salt: impl Into<String>) -> Self {
+        self.salt = Some(salt.into());
+        self
     }
 
     pub fn mask(mut self, field_name: impl Into<String>, strategy: MaskStrategy) -> Self {
@@ -350,26 +392,31 @@ impl PIIMaskingTransformer {
 
     pub fn transform(&self) -> RecordTransformation {
         let fields = self.fields.clone();
+        let salt = self.salt.clone();
         Arc::new(move |mut record: DataRecord| {
             for (field, strategy) in &fields {
-                if let Some(val) = record.get(field) {
-                    if !val.is_null() {
-                        let masked = Self::apply_strategy(val, *strategy);
-                        record.insert(field.clone(), masked);
-                    }
+                if let Some(val) = record.get(field)
+                    && !val.is_null()
+                {
+                    let masked = Self::apply_strategy(val, *strategy, salt.as_deref());
+                    record.insert(field.clone(), masked);
                 }
             }
             record
         })
     }
 
-    fn apply_strategy(value: &Value, strategy: MaskStrategy) -> Value {
-        let val_str = value_to_string(value);
+    fn apply_strategy(value: &Value, strategy: MaskStrategy, salt: Option<&str>) -> Value {
         match strategy {
             MaskStrategy::Redact => Value::String("[REDACTED]".to_string()),
             MaskStrategy::Null => Value::Null,
             MaskStrategy::Hash => {
+                let val_str = value_to_string(value);
                 let mut hasher = Sha256::new();
+                if let Some(s) = salt {
+                    hasher.update(s.as_bytes());
+                    hasher.update(b":");
+                }
                 hasher.update(val_str.as_bytes());
                 let digest = hasher.finalize();
                 let mut hex_str = String::with_capacity(digest.len() * 2);
@@ -379,16 +426,37 @@ impl PIIMaskingTransformer {
                 }
                 Value::String(hex_str)
             }
-            MaskStrategy::Partial => Value::String(Self::apply_partial_mask(&val_str)),
+            MaskStrategy::Partial => {
+                let val_str = value_to_string(value);
+                Value::String(Self::apply_partial_mask(&val_str))
+            }
         }
     }
 
+    fn looks_like_email(val: &str) -> Option<(&str, &str)> {
+        let (user, domain) = val.split_once('@')?;
+        if user.is_empty()
+            || domain.is_empty()
+            || domain.contains('@')
+            || user.chars().any(char::is_whitespace)
+            || domain.chars().any(char::is_whitespace)
+            || !domain.contains('.')
+            || domain.starts_with('.')
+            || domain.ends_with('.')
+        {
+            return None;
+        }
+        Some((user, domain))
+    }
+
     fn apply_partial_mask(val: &str) -> String {
-        if let Some((user, domain)) = val.split_once('@') {
+        if let Some((user, domain)) = Self::looks_like_email(val) {
             let chars: Vec<char> = user.chars().collect();
-            if chars.len() <= 2 {
-                let last = chars.last().copied().unwrap_or('*');
-                return format!("*{}@{}", last, domain);
+            if chars.len() <= 1 {
+                return format!("*@{}", domain);
+            }
+            if chars.len() == 2 {
+                return format!("{}*@{}", chars[0], domain);
             }
             return format!("{}****@{}", chars[0], domain);
         }

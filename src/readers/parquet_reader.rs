@@ -37,6 +37,36 @@ impl ParquetReader {
         record
     }
 
+    fn format_decimal(data: &[u8], scale: i32) -> String {
+        if data.is_empty() || data.len() > 16 {
+            return format!(
+                "0x{}",
+                data.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+            );
+        }
+        let is_negative = (data[0] & 0x80) != 0;
+        let mut buf = [if is_negative { 0xFF } else { 0x00 }; 16];
+        buf[16 - data.len()..].copy_from_slice(data);
+        let unscaled = i128::from_be_bytes(buf);
+
+        let sign = if unscaled < 0 { "-" } else { "" };
+        let digits = unscaled.unsigned_abs().to_string();
+
+        if scale <= 0 {
+            let zeros = "0".repeat((-scale) as usize);
+            format!("{}{}{}", sign, digits, zeros)
+        } else {
+            let scale_usize = scale as usize;
+            if digits.len() <= scale_usize {
+                let padding = "0".repeat(scale_usize - digits.len());
+                format!("{}0.{}{}", sign, padding, digits)
+            } else {
+                let split = digits.len() - scale_usize;
+                format!("{}{}.{}", sign, &digits[..split], &digits[split..])
+            }
+        }
+    }
+
     fn field_to_value(field: &Field) -> Value {
         match field {
             Field::Null => Value::Null,
@@ -53,11 +83,16 @@ impl ParquetReader {
             Field::Float(f) => Number::from_f64(*f as f64).map(Value::Number).unwrap_or(Value::Null),
             Field::Double(d) => Number::from_f64(*d).map(Value::Number).unwrap_or(Value::Null),
             Field::Str(s) => Value::String(s.clone()),
-            Field::Bytes(b) => Value::String(String::from_utf8_lossy(b.data()).to_string()),
+            Field::Bytes(b) => match std::str::from_utf8(b.data()) {
+                Ok(s) => Value::String(s.to_string()),
+                Err(_) => Value::Array(b.data().iter().map(|&byte| Value::Number(byte.into())).collect()),
+            },
             Field::Date(days) => json!(*days),
+            Field::TimeMillis(ts) => json!(*ts),
+            Field::TimeMicros(ts) => json!(*ts),
             Field::TimestampMillis(ts) => json!(*ts),
             Field::TimestampMicros(ts) => json!(*ts),
-            Field::Decimal(dec) => Value::String(format!("{:?}", dec)),
+            Field::Decimal(dec) => Value::String(Self::format_decimal(dec.data(), dec.scale())),
             Field::Group(sub_row) => {
                 let mut map = Map::new();
                 for (k, v) in sub_row.get_column_iter() {
@@ -106,5 +141,41 @@ impl DataReader for ParquetReader {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use parquet::data_type::{ByteArray, Decimal};
+
+    #[test]
+    fn test_parquet_decimal_and_bytes_conversion() {
+        assert_eq!(
+            ParquetReader::field_to_value(&Field::Decimal(Decimal::from_i32(12345, 10, 2))),
+            json!("123.45")
+        );
+        assert_eq!(
+            ParquetReader::field_to_value(&Field::Decimal(Decimal::from_i32(-5, 10, 2))),
+            json!("-0.05")
+        );
+        assert_eq!(
+            ParquetReader::field_to_value(&Field::Decimal(Decimal::from_i64(42, 10, 0))),
+            json!("42")
+        );
+        assert_eq!(
+            ParquetReader::field_to_value(&Field::Decimal(Decimal::from_i64(42, 10, -2))),
+            json!("4200")
+        );
+
+        // Valid UTF-8 bytes stay String; arbitrary binary bytes stay lossless JSON byte array
+        assert_eq!(
+            ParquetReader::field_to_value(&Field::Bytes(ByteArray::from(b"hello".to_vec()))),
+            json!("hello")
+        );
+        assert_eq!(
+            ParquetReader::field_to_value(&Field::Bytes(ByteArray::from(vec![0xFF, 0x00, 0xFE]))),
+            json!([255, 0, 254])
+        );
     }
 }

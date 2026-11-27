@@ -74,18 +74,27 @@ pub struct XMLReader {
     field_mapping: Option<IndexMap<String, String>>,
     ignore_errors: bool,
     dlq_writer: Option<SharedWriter>,
+    local_dlq_records: Arc<AtomicUsize>,
     rejected_without_dlq: Arc<AtomicUsize>,
 }
 
 impl XMLReader {
     pub fn new<S: Into<SourceInput>>(source: S, options: XMLReaderOptions) -> Self {
         let is_deep_search = options.record_path.starts_with("//");
-        let cleaned_path = options
+        let raw_cleaned = options
             .record_path
             .trim_start_matches("//")
             .trim_start_matches('/')
-            .trim_end_matches('/')
-            .to_string();
+            .trim_end_matches('/');
+        let cleaned_path = if options.strip_namespaces {
+            raw_cleaned
+                .split('/')
+                .map(|seg| Self::clean_name(seg, true))
+                .collect::<Vec<_>>()
+                .join("/")
+        } else {
+            raw_cleaned.to_string()
+        };
 
         Self {
             source: ensure_data_source(source),
@@ -97,6 +106,7 @@ impl XMLReader {
             field_mapping: options.field_mapping,
             ignore_errors: options.ignore_errors,
             dlq_writer: None,
+            local_dlq_records: Arc::new(AtomicUsize::new(0)),
             rejected_without_dlq: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -118,9 +128,15 @@ impl XMLReader {
     fn attach_attributes(obj: &mut Map<String, Value>, e: &BytesStart<'_>, strip_namespaces: bool) -> std::result::Result<(), String> {
         for attr_res in e.attributes() {
             let attr = attr_res.map_err(|err| err.to_string())?;
-            let key_raw = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-            let key = Self::clean_name(&key_raw, strip_namespaces);
-            let val = attr.unescape_value().map_err(|err| err.to_string())?.to_string();
+            let key_raw: &str = attr.key.as_ref();
+            if strip_namespaces && (key_raw == "xmlns" || key_raw.starts_with("xmlns:")) {
+                continue;
+            }
+            let key = Self::clean_name(key_raw, strip_namespaces);
+            let val = attr
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .map_err(|err| err.to_string())?
+                .into_owned();
             obj.insert(format!("@{}", key), Value::String(val));
         }
         Ok(())
@@ -168,6 +184,7 @@ impl DataReader for XMLReader {
         let field_mapping = self.field_mapping.clone();
         let ignore_errors = self.ignore_errors;
         let dlq_writer = self.dlq_writer.clone();
+        let local_dlq_records = Arc::clone(&self.local_dlq_records);
         let rejected_without_dlq = Arc::clone(&self.rejected_without_dlq);
 
         Box::pin(try_stream! {
@@ -186,8 +203,8 @@ impl DataReader for XMLReader {
                 buf.clear();
                 match reader.read_event_into(&mut buf) {
                     Ok(Event::Start(e)) => {
-                        let raw_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                        let tag_name = Self::clean_name(&raw_name, strip_namespaces);
+                        let qname = e.name();
+                        let tag_name = Self::clean_name(qname.as_ref(), strip_namespaces);
                         tag_stack.push(tag_name.clone());
                         let current_path = tag_stack.join("/");
 
@@ -208,6 +225,7 @@ impl DataReader for XMLReader {
                                             dlq_rec.insert("_error".to_string(), Value::String(attr_err));
                                             dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                             dlq.write_dlq(dlq_rec).await?;
+                                            local_dlq_records.fetch_add(1, Ordering::Relaxed);
                                         } else {
                                             rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                         }
@@ -221,8 +239,8 @@ impl DataReader for XMLReader {
                         }
                     }
                     Ok(Event::Empty(e)) => {
-                        let raw_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                        let tag_name = Self::clean_name(&raw_name, strip_namespaces);
+                        let qname = e.name();
+                        let tag_name = Self::clean_name(qname.as_ref(), strip_namespaces);
                         tag_stack.push(tag_name.clone());
                         let current_path = tag_stack.join("/");
 
@@ -242,6 +260,7 @@ impl DataReader for XMLReader {
                                             dlq_rec.insert("_error".to_string(), Value::String(attr_err));
                                             dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                             dlq.write_dlq(dlq_rec).await?;
+                                            local_dlq_records.fetch_add(1, Ordering::Relaxed);
                                         } else {
                                             rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                         }
@@ -255,11 +274,32 @@ impl DataReader for XMLReader {
                             yield Some(record);
                         } else if in_record {
                             let mut obj = Map::new();
-                            if include_attributes {
-                                let _ = Self::attach_attributes(&mut obj, &e, strip_namespaces);
+                            if include_attributes
+                                && let Err(attr_err) = Self::attach_attributes(&mut obj, &e, strip_namespaces)
+                            {
+                                if ignore_errors {
+                                    if let Some(ref dlq) = dlq_writer {
+                                        let mut dlq_rec = DataRecord::new();
+                                        dlq_rec.insert("_error".to_string(), Value::String(attr_err));
+                                        dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
+                                        dlq.write_dlq(dlq_rec).await?;
+                                        local_dlq_records.fetch_add(1, Ordering::Relaxed);
+                                    } else {
+                                        rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    tag_stack.pop();
+                                    continue;
+                                } else {
+                                    Err(DataGenieError::Xml(attr_err))?;
+                                }
                             }
                             if let Some((_, parent_map, _)) = node_stack.last_mut() {
-                                Self::insert_child_value(parent_map, &tag_name, Value::Object(obj));
+                                let child_val = if obj.is_empty() {
+                                    Value::String(String::new())
+                                } else {
+                                    Value::Object(obj)
+                                };
+                                Self::insert_child_value(parent_map, &tag_name, child_val);
                             }
                         }
 
@@ -267,16 +307,52 @@ impl DataReader for XMLReader {
                     }
                     Ok(Event::Text(e)) => {
                         if in_record {
-                            if let Ok(txt) = e.unescape() {
-                                if let Some((_, _, text_buf)) = node_stack.last_mut() {
-                                    text_buf.push_str(&txt);
+                            let txt = e.xml10_content();
+                            if let Some((_, _, text_buf)) = node_stack.last_mut() {
+                                text_buf.push_str(&txt);
+                            }
+                        }
+                    }
+                    Ok(Event::GeneralRef(e)) => {
+                        if in_record {
+                            let resolved = match e.resolve_char_ref() {
+                                Ok(Some(ch)) => Ok(ch.to_string()),
+                                Ok(None) => {
+                                    let name = e.xml10_content();
+                                    match quick_xml::escape::resolve_predefined_entity(&name) {
+                                        Some(s) => Ok(s.to_string()),
+                                        None => Err(format!("Unknown XML entity reference: &{};", name)),
+                                    }
+                                }
+                                Err(err) => Err(err.to_string()),
+                            };
+                            match resolved {
+                                Ok(txt) => {
+                                    if let Some((_, _, text_buf)) = node_stack.last_mut() {
+                                        text_buf.push_str(&txt);
+                                    }
+                                }
+                                Err(ref_err) => {
+                                    if ignore_errors {
+                                        if let Some(ref dlq) = dlq_writer {
+                                            let mut dlq_rec = DataRecord::new();
+                                            dlq_rec.insert("_error".to_string(), Value::String(ref_err));
+                                            dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
+                                            dlq.write_dlq(dlq_rec).await?;
+                                            local_dlq_records.fetch_add(1, Ordering::Relaxed);
+                                        } else {
+                                            rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                    } else {
+                                        Err(DataGenieError::Xml(ref_err))?;
+                                    }
                                 }
                             }
                         }
                     }
                     Ok(Event::CData(e)) => {
                         if in_record {
-                            let txt = String::from_utf8_lossy(e.as_ref());
+                            let txt = e.xml10_content();
                             if let Some((_, _, text_buf)) = node_stack.last_mut() {
                                 text_buf.push_str(&txt);
                             }
@@ -306,7 +382,7 @@ impl DataReader for XMLReader {
                                     yield Some(record);
                                     in_record = false;
                                 } else if let Some((_, parent_map, _)) = node_stack.last_mut() {
-                                    let child_val = if !content.is_empty() && current_map.is_empty() {
+                                    let child_val = if current_map.is_empty() {
                                         Value::String(content)
                                     } else {
                                         if !content.is_empty() {
@@ -330,6 +406,7 @@ impl DataReader for XMLReader {
                                     dlq_rec.insert("_error".to_string(), Value::String(msg));
                                     dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                     dlq.write_dlq(dlq_rec).await?;
+                                    local_dlq_records.fetch_add(1, Ordering::Relaxed);
                                 } else {
                                     rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                                 }
@@ -347,6 +424,7 @@ impl DataReader for XMLReader {
                                 dlq_rec.insert("_error".to_string(), Value::String(err.to_string()));
                                 dlq_rec.insert("_type".to_string(), Value::String("parse_error".to_string()));
                                 dlq.write_dlq(dlq_rec).await?;
+                                local_dlq_records.fetch_add(1, Ordering::Relaxed);
                             } else {
                                 rejected_without_dlq.fetch_add(1, Ordering::Relaxed);
                             }
@@ -365,8 +443,15 @@ impl DataReader for XMLReader {
         self.ignore_errors = true;
     }
 
+    fn propagate_dlq(&mut self, writer: SharedWriter) {
+        if self.dlq_writer.is_none() {
+            self.dlq_writer = Some(writer);
+            self.ignore_errors = true;
+        }
+    }
+
     fn dlq_record_count(&self) -> usize {
-        self.dlq_writer.as_ref().map_or(0, SharedWriter::write_count)
+        self.local_dlq_records.load(Ordering::Relaxed)
     }
 
     fn rejected_record_count(&self) -> usize {

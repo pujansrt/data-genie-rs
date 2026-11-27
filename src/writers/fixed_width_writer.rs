@@ -14,6 +14,7 @@ pub struct FixedWidthWriter {
     has_field_names_in_first_row: bool,
     header_written: bool,
     initialized_field_names: bool,
+    is_closed: bool,
 }
 
 impl FixedWidthWriter {
@@ -26,13 +27,16 @@ impl FixedWidthWriter {
             has_field_names_in_first_row: false,
             header_written: false,
             initialized_field_names: false,
+            is_closed: false,
         }
     }
 
     pub fn set_field_widths<I: IntoIterator<Item = usize>>(mut self, widths: I) -> Result<Self> {
         let collected: Vec<usize> = widths.into_iter().collect();
-        if collected.iter().any(|&w| w == 0) {
-            return Err(DataGenieError::Config("Field widths must be positive numbers.".to_string()));
+        if collected.is_empty() || collected.contains(&0) {
+            return Err(DataGenieError::Config(
+                "Field widths must be non-empty positive numbers.".to_string(),
+            ));
         }
         self.field_widths = collected;
         Ok(self)
@@ -40,7 +44,10 @@ impl FixedWidthWriter {
 
     pub fn with_field_widths<I: IntoIterator<Item = usize>>(mut self, widths: I) -> Self {
         let collected: Vec<usize> = widths.into_iter().collect();
-        assert!(collected.iter().all(|&w| w > 0), "Field widths must be positive numbers.");
+        assert!(
+            !collected.is_empty() && collected.iter().all(|&w| w > 0),
+            "Field widths must be non-empty positive numbers."
+        );
         self.field_widths = collected;
         self
     }
@@ -68,27 +75,35 @@ impl FixedWidthWriter {
     }
 
     fn format_field(value: &str, width: usize) -> String {
-        let chars: Vec<char> = value.chars().collect();
-        if chars.len() > width {
-            chars[..width].iter().collect()
-        } else if chars.len() < width {
-            let mut s: String = chars.into_iter().collect();
-            s.push_str(&" ".repeat(width - value.chars().count()));
-            s
-        } else {
-            value.to_string()
+        let mut out = String::with_capacity(width);
+        let mut count = 0usize;
+        for c in value.chars() {
+            if count == width {
+                break;
+            }
+            out.push(match c {
+                '\r' | '\n' => ' ',
+                other => other,
+            });
+            count += 1;
         }
+        for _ in count..width {
+            out.push(' ');
+        }
+        out
     }
 }
 
 #[async_trait]
 impl DataWriter for FixedWidthWriter {
     async fn write(&mut self, record: DataRecord) -> Result<()> {
-        self.ensure_stream().await?;
+        if self.is_closed {
+            return Err(DataGenieError::Other("Writer is already closed".to_string()));
+        }
 
         if self.field_widths.is_empty() {
             return Err(DataGenieError::Config(
-                "Field widths must be defined using setFieldWidths() before writing.".to_string(),
+                "Field widths must be defined using set_field_widths() before writing.".to_string(),
             ));
         }
 
@@ -104,6 +119,8 @@ impl DataWriter for FixedWidthWriter {
                 self.field_widths.len()
             )));
         }
+
+        self.ensure_stream().await?;
 
         if self.has_field_names_in_first_row && !self.header_written {
             let mut header_line: String = self
@@ -137,11 +154,25 @@ impl DataWriter for FixedWidthWriter {
     }
 
     async fn close(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
         if let Some(mut stream) = self.output_stream.take() {
             stream.flush().await?;
             stream.shutdown().await?;
         }
         self.sink.finalize().await?;
+        Ok(())
+    }
+
+    async fn abort(&mut self) -> Result<()> {
+        if self.is_closed {
+            return Ok(());
+        }
+        self.is_closed = true;
+        self.output_stream = None;
+        self.sink.abort().await?;
         Ok(())
     }
 }
