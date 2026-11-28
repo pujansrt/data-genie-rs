@@ -303,6 +303,6 @@ data-genie infer-schema users.csv --sample 500
 ## Documentation & Contributing
 
 - **Docs & Guides**: [pujansrt.github.io/data-genie-rs](https://pujansrt.github.io/data-genie-rs/) | [docs.rs/data-genie](https://docs.rs/data-genie)
-- **Developer Onboarding & Architecture**: Read [Dev.md](Dev.md) for a complete walkthrough of the project structure, streaming architecture, testing/coverage commands, and step-by-step contribution recipes.
+- **Developer Onboarding & Architecture**: Read [CODEBASE_GUIDE.md](CODEBASE_GUIDE.md) for a complete walkthrough of the project structure, streaming architecture, testing/coverage commands, and step-by-step contribution recipes.
 - **Contribution Guidelines**: See [CONTRIBUTING.md](CONTRIBUTING.md).
 - **License**: [MIT](LICENSE)
