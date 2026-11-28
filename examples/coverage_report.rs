@@ -75,17 +75,12 @@ struct DirEntry {
 }
 
 fn clean_stale_cov_artifacts() {
-    // Clean only workspace-local test binaries & profraw files so dependency crates stay cached,
+    // Clean only crate-local test binaries & profraw files so dependency crates stay cached,
     // preventing Cargo 1.100 stale-binary coverage dilution without triggering full rebuilds.
     let target_dir = Path::new("target/llvm-cov-target");
-    let build_dir = target_dir.join("debug/build");
-    if let Ok(entries) = fs::read_dir(&build_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with("data-genie") {
-                let _ = fs::remove_dir_all(entry.path());
-            }
-        }
+    let build_pkg_dir = target_dir.join("debug/build/data-genie");
+    if build_pkg_dir.exists() {
+        let _ = fs::remove_dir_all(&build_pkg_dir);
     }
     if let Ok(entries) = fs::read_dir(target_dir) {
         for entry in entries.flatten() {
@@ -100,7 +95,7 @@ fn clean_stale_cov_artifacts() {
 fn run_llvm_cov(generate_html: bool) {
     clean_stale_cov_artifacts();
 
-    let mut args = vec!["llvm-cov", "--workspace", "--all-features"];
+    let mut args = vec!["llvm-cov", "--all-features", "--lib", "--test", "integration_tests"];
     if generate_html {
         args.push("--html");
     } else {
@@ -129,22 +124,17 @@ fn load_coverage_json() -> LlvmCovExport {
 }
 
 fn group_by_directory(export: LlvmCovExport, manifest_dir: &Path) -> (BTreeMap<String, DirEntry>, LlvmCovSummary) {
+    let src_root = manifest_dir.join("src");
     let mut dirs: BTreeMap<String, DirEntry> = BTreeMap::new();
     let mut total = LlvmCovSummary::default();
 
     for data in export.data {
         for file in data.files {
             let file_path = Path::new(&file.filename);
-            let Ok(rel) = file_path.strip_prefix(manifest_dir) else {
+            let Ok(rel) = file_path.strip_prefix(&src_root) else {
                 continue;
             };
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            if !rel_str.starts_with("src/") && !rel_str.starts_with("crates/") {
-                continue;
-            }
-            if rel_str.contains("/tests/") {
-                continue;
-            }
             let (dir_name, file_name) = match rel_str.rsplit_once('/') {
                 Some((dir, name)) => (dir.to_string(), name.to_string()),
                 None => ("(root)".to_string(), rel_str.clone()),
@@ -156,7 +146,7 @@ fn group_by_directory(export: LlvmCovExport, manifest_dir: &Path) -> (BTreeMap<S
             total.add(&file.summary);
             entry.files.push(FileEntry {
                 file_name,
-                rel_path: rel_str,
+                rel_path: format!("src/{}", rel_str),
                 html_href,
                 summary: file.summary,
             });
@@ -179,7 +169,11 @@ fn print_terminal_summary(dirs: &BTreeMap<String, DirEntry>, total: &LlvmCovSumm
     println!("{}", "-".repeat(86));
 
     for (dir_name, dir) in dirs {
-        let label = if dir_name == "(root)" { "src/".to_string() } else { format!("{}/", dir_name) };
+        let label = if dir_name == "(root)" {
+            "src/ (root)".to_string()
+        } else {
+            format!("src/{}/", dir_name)
+        };
         println!(
             "{:<34} {:>6.2}% ({:>4}/{:<4}) {:>5.2}% ({:>3}/{:<3}) {:>5.2}% ({:>4}/{:<4})",
             label,
@@ -431,7 +425,11 @@ fn html_escape(s: &str) -> String {
 fn write_directory_index_html(html_dir: &Path, dirs: &BTreeMap<String, DirEntry>, total: &LlvmCovSummary) {
     let mut rows = String::new();
     for (idx, (dir_name, dir)) in dirs.iter().enumerate() {
-        let pkg_label = if dir_name == "(root)" { "src".to_string() } else { dir_name.clone() };
+        let pkg_label = if dir_name == "(root)" {
+            "src (root)".to_string()
+        } else {
+            format!("src/{}", dir_name)
+        };
         let group_id = format!("dir-{}", idx);
         rows.push_str(&format!(
             r#"<tr class="pkg-row" onclick="toggleDir('{gid}', this)" data-expanded="false">

@@ -4,10 +4,10 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::http_transport::default_http_client;
-use data_genie_core::core::error::{DataGenieError, Result};
-use data_genie_core::core::traits::{DataReader, DataRecord, RecordStream};
-use data_genie_core::transformers::SchemaValidator;
+use crate::core::error::{DataGenieError, Result};
+use crate::core::http_transport::default_http_client;
+use crate::core::traits::{DataReader, DataRecord, RecordStream};
+use crate::transformers::SchemaValidator;
 
 const DEFAULT_MAX_PAGES: usize = 10_000;
 

@@ -64,4 +64,67 @@ impl From<serde_json::Error> for DataGenieError {
     }
 }
 
+#[cfg(feature = "yaml")]
+impl From<serde_yaml_ng::Error> for DataGenieError {
+    fn from(err: serde_yaml_ng::Error) -> Self {
+        Self::Yaml(err.to_string())
+    }
+}
+
+#[cfg(feature = "xml")]
+impl From<quick_xml::Error> for DataGenieError {
+    fn from(err: quick_xml::Error) -> Self {
+        Self::Xml(err.to_string())
+    }
+}
+
+#[cfg(feature = "parquet")]
+impl From<parquet::errors::ParquetError> for DataGenieError {
+    fn from(err: parquet::errors::ParquetError) -> Self {
+        Self::Parquet(err.to_string())
+    }
+}
+
+#[cfg(feature = "parquet")]
+impl From<arrow::error::ArrowError> for DataGenieError {
+    fn from(err: arrow::error::ArrowError) -> Self {
+        Self::Parquet(err.to_string())
+    }
+}
+
+#[cfg(feature = "xlsx")]
+impl From<calamine::Error> for DataGenieError {
+    fn from(err: calamine::Error) -> Self {
+        Self::Xlsx(err.to_string())
+    }
+}
+
+#[cfg(feature = "xlsx")]
+impl From<calamine::XlsxError> for DataGenieError {
+    fn from(err: calamine::XlsxError) -> Self {
+        Self::Xlsx(err.to_string())
+    }
+}
+
+#[cfg(feature = "xlsx")]
+impl From<rust_xlsxwriter::XlsxError> for DataGenieError {
+    fn from(err: rust_xlsxwriter::XlsxError) -> Self {
+        Self::Xlsx(err.to_string())
+    }
+}
+
+#[cfg(feature = "http")]
+impl From<reqwest::Error> for DataGenieError {
+    fn from(err: reqwest::Error) -> Self {
+        Self::Http(err.to_string())
+    }
+}
+
+#[cfg(feature = "s3")]
+impl From<object_store::Error> for DataGenieError {
+    fn from(err: object_store::Error) -> Self {
+        Self::ObjectStore(err.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, DataGenieError>;

@@ -9,9 +9,9 @@ use std::time::Duration;
 use tokio::io::AsyncBufRead;
 use tokio_util::io::StreamReader;
 
-use data_genie_core::core::error::{DataGenieError, Result};
-use data_genie_core::core::memory_transport::SharedVecWriter;
-use data_genie_core::core::traits::{BufferedByteReader, ByteReader, ByteWriter, DataSink, DataSource};
+use crate::core::error::{DataGenieError, Result};
+use crate::core::memory_transport::SharedVecWriter;
+use crate::core::traits::{BufferedByteReader, ByteReader, ByteWriter, DataSink, DataSource};
 
 const DEFAULT_HTTP_CONNECT_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 300;

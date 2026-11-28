@@ -9,9 +9,9 @@ use std::fs::File;
 use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 
-use data_genie_core::core::error::{DataGenieError, Result};
-use data_genie_core::core::traits::{DataRecord, DataSink, DataWriter, value_to_f64, value_to_string};
-use data_genie_core::core::transport_utils::{SinkInput, ensure_data_sink};
+use crate::core::error::{DataGenieError, Result};
+use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_f64, value_to_string};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParquetColumnType {

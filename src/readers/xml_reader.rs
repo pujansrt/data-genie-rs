@@ -6,9 +6,9 @@ use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use data_genie_core::core::error::DataGenieError;
-use data_genie_core::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
-use data_genie_core::core::transport_utils::{SourceInput, ensure_data_source};
+use crate::core::error::DataGenieError;
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream, SharedWriter};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
 
 #[derive(Debug, Clone)]
 pub struct XMLReaderOptions {

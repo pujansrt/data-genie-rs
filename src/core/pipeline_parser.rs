@@ -3,19 +3,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
-use data_genie_core::core::error::{DataGenieError, Result};
-use data_genie_core::core::expr::Expr;
-use data_genie_core::core::job::{Job, JobMetrics, JobOptions, block_on_send};
-use data_genie_core::core::traits::{DataReader, DataWriter, RecordStream, SharedWriter};
-use data_genie_core::core::transport_utils::{SinkInput, SourceInput};
-use data_genie_core::core::{StderrLogger, StdinSource, StdoutSink};
-use data_genie_core::filters::{FilterExpression, FilteringReader};
-use data_genie_core::readers::{CSVReader, CSVReaderOptions, JsonReader, NDJsonReader, TSVReader, TSVReaderOptions};
-use data_genie_core::transformers::{
+use crate::core::error::{DataGenieError, Result};
+use crate::core::expr::Expr;
+use crate::core::job::{Job, JobMetrics, JobOptions, block_on_send};
+use crate::core::traits::{DataReader, DataWriter, RecordStream, SharedWriter};
+use crate::core::transport_utils::{SinkInput, SourceInput};
+use crate::core::{StderrLogger, StdinSource, StdoutSink};
+use crate::filters::{FilterExpression, FilteringReader};
+use crate::readers::{CSVReader, CSVReaderOptions, JsonReader, NDJsonReader, TSVReader, TSVReaderOptions, XMLReader, XMLReaderOptions};
+use crate::transformers::{
     BasicFieldTransformer, MaskStrategy, PIIMaskingTransformer, RemoveFields, RenameField, SelectFields, SetCalculatedField, TransformingReader,
 };
-use data_genie_core::writers::{CSVWriter, ConsoleWriter, JsonWriter, NDJsonWriter, TSVWriter};
-use data_genie_xml::{XMLReader, XMLReaderOptions, XMLWriter, XMLWriterOptions};
+use crate::writers::{CSVWriter, ConsoleWriter, JsonWriter, NDJsonWriter, TSVWriter, XMLWriter, XMLWriterOptions};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReaderConfig {

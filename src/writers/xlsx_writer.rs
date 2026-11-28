@@ -6,9 +6,9 @@ use tokio::io::AsyncWriteExt;
 const EXCEL_MAX_COLUMNS: usize = 16_384;
 const EXCEL_MAX_ROWS: usize = 1_048_576;
 
-use data_genie_core::core::error::{DataGenieError, Result};
-use data_genie_core::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
-use data_genie_core::core::transport_utils::{SinkInput, ensure_data_sink};
+use crate::core::error::{DataGenieError, Result};
+use crate::core::traits::{DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 #[derive(Debug, Clone)]
 pub struct XlsxWriterOptions {

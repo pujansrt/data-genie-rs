@@ -6,10 +6,10 @@ use serde_json::{Map, Number, Value, json};
 use std::fs::File;
 use std::sync::Arc;
 
-use data_genie_core::core::error::DataGenieError;
-use data_genie_core::core::traits::{DataReader, DataRecord, DataSource, RecordStream};
-use data_genie_core::core::transport_utils::{SourceInput, ensure_data_source};
-use data_genie_core::transformers::SchemaValidator;
+use crate::core::error::DataGenieError;
+use crate::core::traits::{DataReader, DataRecord, DataSource, RecordStream};
+use crate::core::transport_utils::{SourceInput, ensure_data_source};
+use crate::transformers::SchemaValidator;
 
 /// Streaming columnar Parquet file reader built on the official Apache `parquet` crate.
 pub struct ParquetReader {

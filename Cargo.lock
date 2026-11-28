@@ -609,128 +609,30 @@ dependencies = [
 
 [[package]]
 name = "data-genie"
-version = "0.3.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "data-genie-core",
- "data-genie-http",
- "data-genie-parquet",
- "data-genie-s3",
- "data-genie-xlsx",
- "data-genie-xml",
- "data-genie-yaml",
- "futures-util",
- "indexmap",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "data-genie-cli"
-version = "0.3.0"
-dependencies = [
- "data-genie",
- "serde_json",
-]
-
-[[package]]
-name = "data-genie-core"
-version = "0.3.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "chrono",
- "csv",
- "futures-core",
- "futures-util",
- "indexmap",
- "regex",
- "serde",
- "serde_json",
- "sha2",
- "tokio",
-]
-
-[[package]]
-name = "data-genie-http"
-version = "0.3.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "data-genie-core",
- "futures-util",
- "reqwest",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "data-genie-parquet"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arrow",
  "async-stream",
  "async-trait",
  "bytes",
- "data-genie-core",
- "indexmap",
- "parquet",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "data-genie-s3"
-version = "0.3.0"
-dependencies = [
- "async-trait",
- "bytes",
- "data-genie-core",
- "futures-util",
- "object_store",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "data-genie-xlsx"
-version = "0.3.0"
-dependencies = [
- "async-stream",
- "async-trait",
  "calamine",
- "data-genie-core",
- "rust_xlsxwriter",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "data-genie-xml"
-version = "0.3.0"
-dependencies = [
- "async-stream",
- "async-trait",
- "data-genie-core",
+ "chrono",
+ "csv",
+ "futures-core",
+ "futures-util",
  "indexmap",
+ "object_store",
+ "parquet",
  "quick-xml 0.42.0",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "data-genie-yaml"
-version = "0.3.0"
-dependencies = [
- "data-genie-core",
- "data-genie-xml",
- "indexmap",
+ "regex",
+ "reqwest",
+ "rust_xlsxwriter",
  "serde",
  "serde_json",
  "serde_yaml_ng",
+ "sha2",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

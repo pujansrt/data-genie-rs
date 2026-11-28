@@ -10,9 +10,9 @@ use std::sync::{Arc, Mutex};
 use tokio::io::AsyncBufRead;
 use tokio_util::io::StreamReader;
 
-use data_genie_core::core::error::{DataGenieError, Result};
-use data_genie_core::core::memory_transport::SharedVecWriter;
-use data_genie_core::core::traits::{BufferedByteReader, ByteReader, ByteWriter, DataSink, DataSource};
+use crate::core::error::{DataGenieError, Result};
+use crate::core::memory_transport::SharedVecWriter;
+use crate::core::traits::{BufferedByteReader, ByteReader, ByteWriter, DataSink, DataSource};
 
 /// S3-compatible [`DataSource`] built on `object_store`.
 /// Supports real AWS S3 buckets as well as custom `Arc<dyn ObjectStore>` (e.g., `InMemory` for tests or MinIO).

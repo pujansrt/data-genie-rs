@@ -1008,12 +1008,78 @@ fn test_stdio_transport_api() {
     logger.warn("stderr warn test");
     logger.error("stderr error test");
     logger.debug("stderr debug test");
+
+    #[cfg(feature = "yaml")]
+    {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        // End-to-end CLI test: stdin ("-") -> stdout ("-") keeps stdout clean and routes logs to stderr
+        let dir = std::env::temp_dir().join(format!("data_genie_stdio_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let yaml_path = dir.join("stdio.yaml");
+        std::fs::write(
+            &yaml_path,
+            r#"
+job:
+  name: "Stdio Pipe Test"
+  showProgress: true
+pipeline:
+  read:
+    type: csv
+    path: "-"
+  transform:
+    - type: type-convert
+      fields: [amount]
+      to: float
+    - type: calculate
+      field: tier
+      expression: "amount >= 500 ? 'GOLD' : 'STANDARD'"
+    - type: filter
+      expression: "amount > 100"
+  write:
+    type: ndjson
+    path: "-"
+"#,
+        )
+        .unwrap();
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_data-genie"))
+            .args(["run", yaml_path.to_str().unwrap()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        child.stdin.take().unwrap().write_all(b"id,amount\n1,50\n2,250\n3,600\n").unwrap();
+
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "CLI failed: {}", stderr);
+
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), 2, "Expected pure NDJSON on stdout, got: {:?}", stdout);
+        let rec0: DataRecord = serde_json::from_str(lines[0]).unwrap();
+        let rec1: DataRecord = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(rec0.get("id"), Some(&json!("2")));
+        assert_eq!(rec0.get("tier"), Some(&json!("STANDARD")));
+        assert_eq!(rec1.get("id"), Some(&json!("3")));
+        assert_eq!(rec1.get("tier"), Some(&json!("GOLD")));
+
+        assert!(stderr.contains("Running Job: Stdio Pipe Test"));
+        assert!(stderr.contains("Job Completed"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(feature = "yaml")]
 #[test]
 fn test_pipeline_validation_and_tsv_xml_calculate_steps() {
     use data_genie::{PipelineConfig, PipelineParser, PipelineSection, ReaderConfig, TransformConfig, WriterConfig};
+    use std::process::Command;
 
     // 1. Aggregated validation via PipelineConfig::validate & PipelineParser::validate_yaml
     let missing_section = PipelineConfig {
@@ -1166,10 +1232,24 @@ pipeline:
     .unwrap();
     std::fs::write(&bad_yaml_path, invalid_yaml).unwrap();
 
-    // validate_file (pass + fail)
+    // validate_file & CLI validate (pass + fail)
     PipelineParser::validate_file(&tsv_to_xml_yaml).unwrap();
     PipelineParser::validate_file(&xml_to_tsv_yaml).unwrap();
     assert!(PipelineParser::validate_file(&bad_yaml_path).is_err());
+
+    let ok_out = Command::new(env!("CARGO_BIN_EXE_data-genie"))
+        .args(["validate", tsv_to_xml_yaml.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(ok_out.status.success());
+    assert!(String::from_utf8_lossy(&ok_out.stdout).contains("Pipeline configuration is valid."));
+
+    let bad_out = Command::new(env!("CARGO_BIN_EXE_data-genie"))
+        .args(["validate", bad_yaml_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!bad_out.status.success());
+    assert!(String::from_utf8_lossy(&bad_out.stderr).contains("Invalid pipeline configuration"));
 
     // Run both declarative pipelines
     let m1 = PipelineParser::run_blocking(&tsv_to_xml_yaml).unwrap();
@@ -1333,9 +1413,9 @@ fn test_memory_reader_shared_collection_and_multi_writer_builder() {
 #[test]
 fn test_s3_and_http_sink_idempotent_close_content_type_and_abort_on_job_failure() {
     block_on(async {
-        use data_genie::s3::object_store::path::Path as ObjectPath;
-        use data_genie::s3::object_store::{Attribute, ObjectStoreExt};
         use data_genie::{HttpSink, HttpSinkOptions, RecordStream, S3Sink, S3Source};
+        use object_store::path::Path as ObjectPath;
+        use object_store::{Attribute, ObjectStoreExt};
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;

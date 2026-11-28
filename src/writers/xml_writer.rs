@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
-use data_genie_core::core::error::{DataGenieError, Result};
-use data_genie_core::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter, value_to_string};
-use data_genie_core::core::transport_utils::{SinkInput, ensure_data_sink};
+use crate::core::error::{DataGenieError, Result};
+use crate::core::traits::{ByteWriter, DataRecord, DataSink, DataWriter, value_to_string};
+use crate::core::transport_utils::{SinkInput, ensure_data_sink};
 
 #[derive(Debug, Clone)]
 pub struct XMLWriterOptions {

@@ -1,80 +1,11 @@
-pub mod core {
-    pub use data_genie_core::core::*;
-
-    #[cfg(feature = "http")]
-    pub use data_genie_http::http_transport;
-    #[cfg(feature = "http")]
-    pub use data_genie_http::{HttpSink, HttpSinkOptions, HttpSource, HttpSourceOptions};
-
-    #[cfg(feature = "s3")]
-    pub use data_genie_s3::s3_transport;
-    #[cfg(feature = "s3")]
-    pub use data_genie_s3::{S3Sink, S3Source};
-
-    #[cfg(feature = "yaml")]
-    pub use data_genie_yaml::pipeline_parser;
-    #[cfg(feature = "yaml")]
-    pub use data_genie_yaml::{BoxedReader, JobConfig, PipelineConfig, PipelineParser, PipelineSection, ReaderConfig, TransformConfig, WriterConfig};
-}
-
-pub mod filters {
-    pub use data_genie_core::filters::*;
-}
-
-pub mod readers {
-    pub use data_genie_core::readers::*;
-
-    #[cfg(feature = "xml")]
-    pub use data_genie_xml::xml_reader;
-    #[cfg(feature = "xml")]
-    pub use data_genie_xml::{XMLReader, XMLReaderOptions};
-
-    #[cfg(feature = "parquet")]
-    pub use data_genie_parquet::ParquetReader;
-    #[cfg(feature = "parquet")]
-    pub use data_genie_parquet::parquet_reader;
-
-    #[cfg(feature = "xlsx")]
-    pub use data_genie_xlsx::xlsx_reader;
-    #[cfg(feature = "xlsx")]
-    pub use data_genie_xlsx::{XlsxReader, XlsxReaderOptions};
-
-    #[cfg(feature = "http")]
-    pub use data_genie_http::http_reader;
-    #[cfg(feature = "http")]
-    pub use data_genie_http::{HttpReader, HttpReaderOptions, NextPageExtractor, ResultsExtractor};
-}
-
-pub mod transformers {
-    pub use data_genie_core::transformers::*;
-}
-
-pub mod writers {
-    pub use data_genie_core::writers::*;
-
-    #[cfg(feature = "xml")]
-    pub use data_genie_xml::xml_writer;
-    #[cfg(feature = "xml")]
-    pub use data_genie_xml::{XMLWriter, XMLWriterOptions};
-
-    #[cfg(feature = "parquet")]
-    pub use data_genie_parquet::parquet_writer;
-    #[cfg(feature = "parquet")]
-    pub use data_genie_parquet::{ParquetColumnType, ParquetFieldSchema, ParquetSchema, ParquetWriter};
-
-    #[cfg(feature = "xlsx")]
-    pub use data_genie_xlsx::xlsx_writer;
-    #[cfg(feature = "xlsx")]
-    pub use data_genie_xlsx::{XlsxWriter, XlsxWriterOptions};
-}
-
-#[cfg(feature = "s3")]
-pub use data_genie_s3 as s3;
+pub mod core;
+pub mod filters;
+pub mod readers;
+pub mod transformers;
+pub mod writers;
 
 #[doc(hidden)]
-pub use data_genie_core::serde_json;
-
-pub use data_genie_core::record;
+pub use serde_json;
 
 // Core exports
 pub use core::{
@@ -103,12 +34,12 @@ pub use readers::{
     SQLReader, TSVReader, TSVReaderOptions,
 };
 
+#[cfg(feature = "xml")]
+pub use readers::{XMLReader, XMLReaderOptions};
 #[cfg(feature = "parquet")]
 pub use readers::ParquetReader;
 #[cfg(feature = "http")]
 pub use readers::{HttpReader, HttpReaderOptions, NextPageExtractor, ResultsExtractor};
-#[cfg(feature = "xml")]
-pub use readers::{XMLReader, XMLReaderOptions};
 #[cfg(feature = "xlsx")]
 pub use readers::{XlsxReader, XlsxReaderOptions};
 
@@ -125,9 +56,9 @@ pub use writers::{
     ParallelWriterOptions, RetryOptions, RetryingWriter, SQLWriter, SqlDialect, TSVWriter,
 };
 
-#[cfg(feature = "parquet")]
-pub use writers::{ParquetColumnType, ParquetFieldSchema, ParquetSchema, ParquetWriter};
 #[cfg(feature = "xml")]
 pub use writers::{XMLWriter, XMLWriterOptions};
+#[cfg(feature = "parquet")]
+pub use writers::{ParquetColumnType, ParquetFieldSchema, ParquetSchema, ParquetWriter};
 #[cfg(feature = "xlsx")]
 pub use writers::{XlsxWriter, XlsxWriterOptions};
